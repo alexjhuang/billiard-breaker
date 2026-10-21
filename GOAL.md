@@ -101,6 +101,8 @@ Small on purpose:
 4. Before stopping or when context gets long: update PROGRESS.md (current
    milestone, in-progress work, next concrete step, open problems, dead ends
    tried) and commit. If tests are red, prefix the commit `WIP:` and say so.
+5. Push after every commit (`git push`). If a push fails, note it in
+   PROGRESS.md and keep working; retry on the next commit.
 
 ## Rules
 - Never weaken, skip, or delete a test to make progress. If a test is wrong,
