@@ -8,7 +8,9 @@ Source of truth between sessions. Trust `python3 tests/run_all.py` over this fil
       ours) — keep outputs small.
 - [x] M1 oracle — `python3 tests/run_all.py` 8 passed. SPEC.md frozen. Tracking-bot
       autoplay wins in 903 frames (game is winnable). `play_oracle.py` smoke-tested in a pty.
-- [ ] M2 simulator
+- [x] M2 simulator — sim.py big-int Margolus BBM; 15 tests pass (cross-checked vs a
+      set-based reference, reversible, conserving, dimer mirrors all 8 cases, head-on
+      gate). Speed: ~1.4 Gcell-steps/s (2000x2000: 2.95 ms/step).
 - [ ] M3 tiles
 - [ ] M4 netlist
 - [ ] M5 layouter on small circuits
@@ -18,7 +20,7 @@ Source of truth between sessions. Trust `python3 tests/run_all.py` over this fil
 - [ ] M9 finish
 
 ## Current
-M2 next: big-int BBMCA simulator in sim.py + physics tests (dimer mirror, head-on gate).
+M3 next: tile library. Key open problem below.
 
 ## Open problems
 - Head-on interaction gate: pass-through outputs travel back along the other
