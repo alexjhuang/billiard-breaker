@@ -22,10 +22,11 @@ Slot = namedtuple('Slot', 'kind live op data_line power_line out_lines land drop
 # moves: {sig: (from_line, to_line, m)}; inputs: {name: (sig, line)} (input slot)
 
 
-def up_cost(n):
-    """m (delay 32m) for moving up n lines."""
+def up_cost(n, row=28):
+    """m (the lift delays the lane m slots' worth of rows) for moving up n lines
+    at pitch 40: the up-jog is h = row*m/2 high and the down-jog h - 20n >= 5."""
     m = 1
-    while 16 * m - 20 * n < 5:
+    while row * m // 2 - 20 * n < 5:
         m += 1
     return m
 

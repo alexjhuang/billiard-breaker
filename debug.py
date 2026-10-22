@@ -48,7 +48,7 @@ def first_fault(m, state, inputs, frame_inputs=None):
     for j, slot in enumerate(plan.slots):
         u0, r = m.u0[j], m.rows(j)
         for s, (line, debt) in slot.live.items():
-            lane = m.lane(line, r - 32 * debt)
+            lane = m.lane(line, r - m.ROW * debt)
             t = u0 - (lane.p + lane.q) // 2
             checks.setdefault(t, []).append((j, s, line, lane, t))
     w.t = min(min(sched), min(checks))
@@ -91,7 +91,7 @@ def first_fault_fast(m, state, inputs):
     for j, slot in enumerate(plan.slots):
         u0, r = m.u0[j], m.rows(j)
         for s, (line, debt) in slot.live.items():
-            lane = m.lane(line, r - 32 * debt)
+            lane = m.lane(line, r - m.ROW * debt)
             t = u0 - (lane.p + lane.q) // 2
             for x, y in lane.cells(t):
                 reads.append((t, x, y))

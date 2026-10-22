@@ -1,14 +1,15 @@
 """Turn a Plan into a Layout (bars + scheduled balls) and run it frame by frame.
 
-Slot geometry (W columns per slot, u0 = slot * W, rows relative to the slot's
-resting row r = R0 - 32*slot; every lane leaves a slot at r - 32):
-  op slot:   u0+1 power column (power data lands at row r-14)
-             u0+8 zone A: controls retime 12, data retime 14, idle lanes 32
-             x+y = 2(u0+18)+1 messenger column, row r-12
+Slot geometry (W columns per slot, u0 = slot start, rows relative to the slot's
+resting row r = R0 - ROW*slot; every lane leaves a slot at r - ROW):
+  op slot:   u0+1 power column (power data lands at row r-ACT_D)
+             u0+8 zone A: controls retime ACT_C, data ACT_D, idle lanes ROW
+             x+y = 2(u0+18)+1 messenger column, row r-ACT_C
              u0+24 splitter (and landing of a kept B, 1.5 columns left)
-             u0+27 zone D: control retime 14/-6, A 12/-6, B 18 (14 if landed)
-             u0+37 drops (controls at their last use, leftovers)
-  lift slot: u0+4 down-moves (retime 32), u0+16 idle bumps, u0+28 up-moves
+             u0+27 zone D: everything back onto the lattice (r - ROW)
+             u0+37 drops (controls at their last use, leftovers), 4 apart
+             end-8 lift zone (next-state lanes lifted early), if any
+  lift slot: u0+4 down-moves, u0+16 idle bumps, u0+28 up-moves
   idle slot: u0+16 idle bumps for lanes without debt
 Lanes with debt (after an up-move) skip their idle bump.
 """
@@ -16,10 +17,18 @@ from layout import Layout
 from physics import Ball, interaction
 
 W, PITCH, R0 = 40, 40, 0
+# Row lattice: every lane leaves a slot ROW rows later. Controls are delayed
+# ACT_C into the messenger's row, data ACT_C+2 (one read shifts a lane 6, a
+# messenger 2); everything is then put back on the lattice. ROW=28/ACT_C=10
+# keeps every unplanned crossing >= 8 rows away from a shatter offset.
+ROW, ACT_C = 28, 10
+ACT_D = ACT_C + 2
 MARGIN_TOP, MARGIN_BOT = 80, 60
 
 
 class Machine:
+    ROW = ROW
+
     def __init__(self, plan, w=W):
         self.plan, self.W = plan, w
         nslots = len(plan.slots)
@@ -30,7 +39,7 @@ class Machine:
             self.uend.append(end)
             self.u0.append(end)
         self.U = self.u0[-1]
-        self.P = self.U + 32 * nslots
+        self.P = self.U + ROW * nslots
         nlines = max(l for s in plan.slots for l, _ in s.live.values()) + 2
         self.C0 = 0
         self.lo = self.line_c(nlines) - MARGIN_BOT
@@ -61,7 +70,7 @@ class Machine:
         return Ball('SE', 2, c + row, row)
 
     def rows(self, j):
-        return R0 - 32 * j
+        return R0 - ROW * j
 
     # --- slot kinds --------------------------------------------------------
     def idle_bumps(self, j, slot, skip, u):
@@ -69,13 +78,13 @@ class Machine:
         for s, (line, debt) in slot.live.items():
             if s in skip or debt:
                 continue
-            self.L.retime(self.lane(line, r), u, 32)
+            self.L.retime(self.lane(line, r), u, ROW)
 
     def slot_input(self, j, slot):
         u0, r, L = self.u0[j], self.rows(j), self.L
         for name, (s, line) in slot.inputs.items():
-            ln = L.power(u0 + 1, self.line_c(line), r - 14, tag='input:' + name)
-            L.retime(ln, u0 + 8, 18)
+            ln = L.power(u0 + 1, self.line_c(line), r - ACT_D, tag='input:' + name)
+            L.retime(ln, u0 + 8, ROW - ACT_D)
         # last frame's extra outputs sit on their final lines; drop them
         self.idle_bumps(j, slot, (), u0 + 8)
         if slot.drops:  # last frame's extra outputs sit on their final lines
@@ -89,21 +98,21 @@ class Machine:
         u0, r, L = self.u0[j], self.rows(j), self.L
         for s, (a, b, m) in slot.moves.items():
             if b > a:  # down
-                L.retime(self.lane(a, r), u0 + 4, 32, self.line_c(b) - self.line_c(a))
+                L.retime(self.lane(a, r), u0 + 4, ROW, self.line_c(b) - self.line_c(a))
         self.idle_bumps(j, slot, slot.moves, u0 + 16)
         for s, (a, b, m) in slot.moves.items():
             if b < a:  # up
-                L.retime(self.lane(a, r), u0 + 28, 32 * m, self.line_c(b) - self.line_c(a))
+                L.retime(self.lane(a, r), u0 + 28, ROW * m, self.line_c(b) - self.line_c(a))
 
     def slot_op(self, j, slot):
         u0, r, L, op = self.u0[j], self.rows(j), self.L, slot.op
-        ctrl_lanes = {c: L.retime(self.lane(slot.live[c][0], r), u0 + 8, 12) for c in set(op.ctrls)}
+        ctrl_lanes = {c: L.retime(self.lane(slot.live[c][0], r), u0 + 8, ACT_C) for c in set(op.ctrls)}
         if op.data is None:
-            R = L.power(u0 + 1, self.line_c(slot.power_line), r - 14)
+            R = L.power(u0 + 1, self.line_c(slot.power_line), r - ACT_D)
         else:
-            R = L.retime(self.lane(slot.data_line, r), u0 + 8, 14)
+            R = L.retime(self.lane(slot.data_line, r), u0 + 8, ACT_D)
         self.idle_bumps(j, slot, set(op.ctrls) | {op.data} | set(slot.moves), u0 + 8)
-        Q = L.messenger(2 * (u0 + 18) + 1, r - 12)
+        Q = L.messenger(2 * (u0 + 18) + 1, r - ACT_C)
         # controls are read in order from the top; at most one is present
         shifted = {c: interaction(ctrl_lanes[c], Q)[1] for c in ctrl_lanes}
         Q2 = Q._replace(q=Q.q - 2)
@@ -112,23 +121,23 @@ class Machine:
         if op.keep == 'AB':
             bar = L.split(R, uS, 'A')                # B goes down ...
             B = self.land(R, bar, slot.land[1])      # ... and lands on its own line
-            L.retime(A, u0 + 27, 12, -6)
-            L.retime(B, u0 + 27, 14)
+            L.retime(A, u0 + 27, ROW - ACT_D - 6, -6)
+            L.retime(B, u0 + 27, ROW - ACT_D - 4)
         else:
             L.split(R, uS, op.keep)
             if op.keep == 'A':
-                L.retime(A, u0 + 27, 12, -6)
+                L.retime(A, u0 + 27, ROW - ACT_D - 6, -6)
             else:
-                L.retime(R, u0 + 27, 18)
+                L.retime(R, u0 + 27, ROW - ACT_D)
         for c in set(op.ctrls):
             X2 = shifted[c]
             if c in slot.drops:
                 L.drop(X2, self.drop_u(j, slot, slot.live[c][0]))
             else:
-                L.retime(X2, u0 + 27, 14, -6)
+                L.retime(X2, u0 + 27, ROW - ACT_C - 6, -6)
         uL = self.uend[j] - 8  # lift zone at the end of the slot
         for s, (a, b, m) in slot.moves.items():
-            L.retime(self.lane(a, r), uL, 32 * m, self.line_c(b) - self.line_c(a))
+            L.retime(self.lane(a, r), uL, ROW * m, self.line_c(b) - self.line_c(a))
 
     def land(self, B, bar, line):
         """B (unshifted R track) was turned down by splitter `bar`; catch it on `line`."""

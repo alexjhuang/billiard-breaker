@@ -83,3 +83,14 @@ cuts and predicted across the wrap seam through an empty zone. It was exact
 design all lanes move through the slots together as one diagonal wavefront,
 so at any moment only ~4 of 31 strips have work, and causality forbids a
 strip from running ahead of the lanes it waits for. Removed.
+
+## 2026-10-21 — dead end: space-time packing with rising messengers (plan2)
+Idea: lanes keep their own timing (no idle bumps), several ops share a slot
+at different row levels, and a transposed copy of the gate recipe (rising
+messenger, data above controls) lets values move up as well as down. The
+transposed recipe works in the CA (all slot tests pass mirrored), but rising
+messengers make the data wait one level per line of distance, multi-control
+rising ops need their controls level by line, and without a smarter
+register-pressure-aware line allocator the band grew to ~250 lines with
+~350 levels: no better than the sequential plan once band height (messenger
+lifetimes) is counted. Removed; plan.py + early lifts got most of the gain.
