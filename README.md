@@ -11,7 +11,7 @@ balls bouncing off mirrors and each other.
 python3 game_machine.py     # compile the game into mirrors + a ball schedule (build/, ~10 s)
 python3 play.py             # play it (a/d or arrows, r reset, q quit; terminal >= 66x35)
 python3 play_oracle.py      # the same game in plain Python, for comparison
-python3 tests/run_all.py    # all tests (~2 min)
+python3 tests/run_all.py    # all tests, incl. the 20 x 1000-frame differential test (~3 min)
 python3 difftest.py 1000 20 --threads 4   # billiard machine vs reference, 20 x 1000 frames
 ```
 
@@ -101,7 +101,9 @@ right bring next-state values back up. `docs/slot.png` zooms in on one gate.
   simulator; the game logic and the switch netlist vs the reference on random
   states; the C simulator (serial and threaded) vs the Python simulators;
   play.py's frames vs the reference, a check that play.py never imports game
-  logic, and a terminal smoke run.
+  logic, and a terminal smoke run; and the differential test below
+  (tests/test_difftest.py: 20 sequences × 1000 frames, plus 2 bot games of
+  1500 frames that must each reach a win).
 - `difftest.py`: the billiard machine against `oracle.py`, bit for bit, state
   and win/lose flags every frame. Last full run on the current build:
   20/20 sequences × 1000 frames (4 threads) and 2 × 1500 frames with full
