@@ -20,10 +20,17 @@ Source of truth between sessions. Trust `python3 tests/run_all.py` over this fil
 - [ ] M9 finish
 
 ## Current
-M3 in progress: physics primitives found (see DECISIONS.md "the gate" and
-"floorplan"). Exploration scripts were in /tmp/bbexp (not kept). Next: encode
-the switch gate + crossing/mirror/splitter behaviour as tests in tests/, then a
-planning model (uv beams, rows, safe-crossing check) for the layouter.
+M3 nearly done: physics.py (formulas, tests vs CA), cyl.py (sparse cylinder
+CA), layout.py primitives (retime, power, messenger, split, drop) and a full
+gate slot verified in the CA for all inputs (tests/test_layout.py).
+Slot recipe (rows relative to resting row rho; every lane leaves at rho-32):
+  power R: inject at u0-4 with SE row rho-14 | zone A (u0+3): X retime 12,
+  data R retime 14, idle lanes retime 32 | messenger col x+y=2(u0+13)+1, row
+  rho-12 | split R at u0+17 | zone D (u0+21): X' retime 14 dline -6,
+  A retime 12 dline -6, B retime 18. Lane pitch 40 (x-y units).
+  Lesson: a 32-delay bump's top bar sits ~2 columns left of its u; keep
+  vertical traffic >=4 columns away from bump zones.
+Next: M4 netlist DSL (hw/) + lowering to slot ops + netsim, then M5 planner.
 
 ## Verified formulas (sim-checked 2026-10-21; being moved into physics.py + tests)
 Ball = (dir, s, p, q): lead at (p + dx*t, q + dy*t), trailer s cells behind.
