@@ -92,6 +92,12 @@ class Plan:
     def do_op(self, op, below=-1):
         """below: a power lane made here must also land below this line."""
         lo = max(self.live[c][0] for c in op.ctrls)
+        if (op.data is not None and op.keep == 'A' and len(op.ctrls) == 1
+                and self.live[op.data][0] < lo and self.uses[op.ctrls[0]] == 1):
+            # data & ctrl is symmetric: if the control is not needed afterwards and sits
+            # lower, let it be the data instead of copying the data below it
+            op = op._replace(ctrls=(op.data,), data=op.ctrls[0])
+            lo = self.live[op.ctrls[0]][0]
         if op.data is not None and self.live[op.data][0] <= lo:
             copy = Op((op.data,), None, 'A', self.new_sig(), None)
             self.uses[copy.a] = 1

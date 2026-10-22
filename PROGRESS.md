@@ -42,6 +42,14 @@ Slot recipe (rows relative to resting row rho; every lane leaves at rho-32):
   Lesson: a 32-delay bump's top bar sits ~2 columns left of its u; keep
   vertical traffic >=4 columns away from bump zones.
 M8 log (newest first):
+- C: overlapping-tile threads (world_run_tiles): each epoch of 64 steps the
+  particles are split by position into equal-count ranges; each thread runs
+  its range plus a 2D+4 ghost margin on a private bitmap and keeps only its
+  range (exact by the light-cone argument). Bug found by difftest at scale and
+  fixed: tile windows hanging over the ring ends dropped particles. play.py
+  uses 8 threads: ~12 fps (1 thread ~6). Also tried and dropped: a per-step
+  two-phase threaded step (barriers cost more than the 4 us of work per step).
+- plan: symmetric AND ops swap roles instead of copying (78 -> 72 copies).
 - early lifts (next-state lanes lifted as soon as final, in op slots' lift zone):
   611 slots, P=44812, verified 300x8 + 1500x2 wins; ~6 fps (load avg ~69).
 - logic: freeze folded into controls + switch-tree decoder: 740 -> 488 gates,

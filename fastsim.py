@@ -36,6 +36,9 @@ def lib():
         L.world_set_time.argtypes = [ctypes.c_void_p, I64]
         L.world_cells.restype = I64
         L.world_cells.argtypes = [ctypes.c_void_p, P64, I64]
+        L.world_prof.argtypes = [ctypes.POINTER(ctypes.c_double)]
+        L.world_run_tiles.argtypes = [ctypes.c_void_p, I64, I64, P64, I64, P64, ctypes.POINTER(ctypes.c_uint8),
+                                      ctypes.c_int, I64]
         _lib = L
     return _lib
 
@@ -72,13 +75,18 @@ class FastCyl:
     def broken(self):
         return bool(lib().world_broken(self.w))
 
+    threads, epoch = 1, 32  # >1 threads: overlapping tiles, `epoch` steps per barrier
+
     def run(self, t_end, feeds=(), reads=()):
         """feeds/reads: sorted lists of (t, x, y). Returns list of read bits."""
         f = [v for e in feeds for v in e]
         r = [v for e in reads for v in e]
         out = (ctypes.c_uint8 * max(1, len(reads)))()
-        lib().world_run(self.w, t_end, len(feeds), _arr(f) if f else None,
-                        len(reads), _arr(r) if r else None, out)
+        args = (self.w, t_end, len(feeds), _arr(f) if f else None, len(reads), _arr(r) if r else None, out)
+        if self.threads > 1:
+            lib().world_run_tiles(*args, self.threads, self.epoch)
+        else:
+            lib().world_run(*args)
         return list(out[:len(reads)])
 
     def step(self, n=1):

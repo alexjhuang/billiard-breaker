@@ -1,6 +1,6 @@
 """Differential test: the billiard-ball machine vs oracle.py over many frames.
 
-Usage: python3 difftest.py FRAMES SEQUENCES [first_seed] [--python]
+Usage: python3 difftest.py FRAMES SEQUENCES [first_seed] [--python] [--threads N]
 Each sequence starts from the initial state. Even seeds use random keys;
 odd seeds a noisy paddle-tracking bot, both with occasional resets. Seeds
 >= 1000 use the bot with no random resets, so games run to a win. Sequences run in parallel, one
@@ -49,7 +49,7 @@ def inputs_for(seed, n):
 
 
 def run(args):
-    seed, nframes, python = args
+    seed, nframes, python, threads = args
     m = game_machine.load()
     ins = inputs_for(seed, nframes)
     env = game.env_of(oracle.INIT, 0, 0, 0)
@@ -59,6 +59,7 @@ def run(args):
         got = m.simulate(init, ins, nframes)
     else:
         import fastsim
+        fastsim.FastCyl.threads, fastsim.FastCyl.epoch = threads, 64
         got = fastsim.simulate(m, init, ins, nframes)
     st, wins, bricks_hit = oracle.INIT, 0, 0
     for n in range(nframes + 1):
@@ -78,13 +79,19 @@ def run(args):
 
 
 if __name__ == '__main__':
-    args = [a for a in sys.argv[1:] if not a.startswith('--')]
-    python = '--python' in sys.argv
+    argv = sys.argv[1:]
+    threads = 1
+    if '--threads' in argv:
+        k = argv.index('--threads')
+        threads = int(argv[k + 1])
+        del argv[k:k + 2]
+    args = [a for a in argv if not a.startswith('--')]
+    python = '--python' in argv
     frames, seqs = int(args[0]), int(args[1])
     first = int(args[2]) if len(args) > 2 else 0
     game_machine.load()
     with mp.Pool(min(seqs, mp.cpu_count())) as p:
-        res = p.map(run, [(s, frames, python) for s in range(first, first + seqs)])
+        res = p.map(run, [(s, frames, python, threads) for s in range(first, first + seqs)])
     bad = [r for r in res if not r[1].startswith('ok')]
     for r in res:
         print(f'seed {r[0]}: {r[1]} ({r[2]:.0f}s, {r[2] / frames:.1f}s/frame)')

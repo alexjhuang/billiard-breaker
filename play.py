@@ -23,6 +23,10 @@ def decode(bits):
 
 def main():
     hw = hardware.load()
+    threads = 8
+    if '--threads' in sys.argv:
+        threads = int(sys.argv[sys.argv.index('--threads') + 1])
+    fastsim.FastCyl.threads, fastsim.FastCyl.epoch = threads, 64
     runner = fastsim.Runner(hw)
 
     def stepper(left, right, reset):
