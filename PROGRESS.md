@@ -37,7 +37,15 @@ Slot recipe (rows relative to resting row rho; every lane leaves at rho-32):
   A retime 12 dline -6, B retime 18. Lane pitch 40 (x-y units).
   Lesson: a 32-delay bump's top bar sits ~2 columns left of its u; keep
   vertical traffic >=4 columns away from bump zones.
-Next: C simulator (M8 pulled forward) so difftest.py 1000 20 is feasible,
+Now: M8 performance. play.py runs at ~2.8 fps (C sim, 218 moving particles,
+~5 us/step, P=82308). Plan: (1) static checker (layout records ball path
+segments; flag unintended bar hits/crossings) so layout changes can be checked
+without full CA runs; (2) "lazy rows": lanes keep their own row (any value
+= rho0 mod 32), catch up only when an op needs them -> no idle bumps, frame
+delay D = 32 x critical path instead of 32 x #slots; (3) pack ops at different
+row levels into the same slot (rows differing by 32k never interact) with
+per-op power/split columns -> U ~10x smaller. Expected P ~10k -> 15+ fps.
+Earlier: C simulator (M8 pulled forward) so difftest.py 1000 20 is feasible,
 then M7 play.py. Bug found in M6 (fixed): a kept B's landing bar sat in the
 messenger column (splitter moved to u0+24). Old notes: Game plan today: 1136 slots, 189 lines, P ~ 80k steps;
 python sparse sim ~0.4 s/frame for an 86-slot circuit, so the game needs the

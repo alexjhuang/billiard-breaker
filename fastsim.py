@@ -6,7 +6,6 @@ import subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, 'csim', 'bbm.c')
-LIB = os.path.join(HERE, 'build', 'libbbm.so')
 _lib = None
 I64 = ctypes.c_int64
 P64 = ctypes.POINTER(ctypes.c_int64)
@@ -15,10 +14,15 @@ P64 = ctypes.POINTER(ctypes.c_int64)
 def lib():
     global _lib
     if _lib is None:
-        if not os.path.exists(LIB) or os.path.getmtime(LIB) < os.path.getmtime(SRC):
-            os.makedirs(os.path.dirname(LIB), exist_ok=True)
-            subprocess.run(['gcc', '-O3', '-march=native', '-shared', '-fPIC', '-o', LIB, SRC], check=True)
-        L = ctypes.CDLL(LIB)
+        import hashlib
+        tag = hashlib.sha1(open(SRC, 'rb').read()).hexdigest()[:12]
+        lib_path = os.path.join(HERE, 'build', f'libbbm-{tag}.so')  # never overwrite a loaded library
+        if not os.path.exists(lib_path):
+            os.makedirs(os.path.dirname(lib_path), exist_ok=True)
+            tmp = lib_path + f'.{os.getpid()}.tmp'
+            subprocess.run(['gcc', '-O3', '-march=native', '-shared', '-fPIC', '-o', tmp, SRC], check=True)
+            os.replace(tmp, lib_path)
+        L = ctypes.CDLL(lib_path)
         L.world_new.restype = ctypes.c_void_p
         L.world_new.argtypes = [I64, I64, I64]
         L.world_free.argtypes = [ctypes.c_void_p]
