@@ -180,3 +180,73 @@ def lower(outputs):
         net.outputs[name] = data(outputs[name])
     assert all(v == 0 for v in remaining.values()), [k for k, v in remaining.items() if v]
     return net
+
+
+def fan_out(net, max_reads=4):
+    """Bound how often any one lane is read: a control read costs the lane a
+    level, so a signal read k times serialises k ops. Signals used more than
+    max_reads times get a balanced tree of copies right after they are made,
+    and their uses are spread over the leaves. Returns a new Netlist."""
+    uses = {}
+    for i, op in enumerate(net.ops):
+        for s in op.ctrls:
+            uses.setdefault(s, []).append(i)
+        if op.data is not None:
+            uses.setdefault(op.data, []).append(i)
+    for name, s in net.outputs.items():
+        uses.setdefault(s, []).append(len(net.ops))
+    busy = {s: u for s, u in uses.items() if len(u) > max_reads}
+    out = Netlist()
+    out.inputs, out.n = dict(net.inputs), net.n
+    rename = {}  # (op index, old signal) -> leaf signal
+
+    def tree(s):
+        """Copy ops making leaves for s; returns leaf signals (s itself is one)."""
+        k = len(busy[s])
+        nleaves = -(-k // max_reads)
+        leaves = [s]
+        while len(leaves) < nleaves:  # every leaf so far makes one copy: breadth first
+            grown = []
+            for leaf in leaves:
+                if len(leaves) + len(grown) >= nleaves:
+                    break
+                grown.append(out.sw([leaf], None, 'A')[0])
+            leaves += grown
+        # leaf j serves the uses in its share; copy ops already read some leaves once
+        assign, per = {}, -(-k // len(leaves))
+        for j, i in enumerate(busy[s]):
+            assign[i] = leaves[min(j // per, len(leaves) - 1)]
+        return assign
+
+    def made(s):
+        if s in busy:
+            for i, leaf in tree(s).items():
+                rename[i, s] = leaf
+
+    for s in net.inputs.values():
+        made(s)
+    for i, op in enumerate(net.ops):
+        ctrls = tuple(rename.get((i, c), c) for c in op.ctrls)
+        data = rename.get((i, op.data), op.data) if op.data is not None else None
+        out.ops.append(Op(ctrls, data, op.keep, op.a, op.b))
+        for s in (op.a, op.b):
+            if s is not None:
+                made(s)
+    for name, s in net.outputs.items():
+        out.outputs[name] = rename.get((len(net.ops), s), s)
+    return out
+
+
+def depth(net):
+    """Critical path in levels: an op needs all inputs ready; a read control is
+    ready again one level later, outputs one level later."""
+    level = {s: 0 for s in net.inputs.values()}
+    for op in net.ops:
+        ins = list(op.ctrls) + ([op.data] if op.data else [])
+        l = max(level[s] for s in ins)
+        for s in (op.a, op.b):
+            if s is not None:
+                level[s] = l + 1
+        for c in op.ctrls:
+            level[c] = l + 1
+    return max(level[s] for s in net.outputs.values())

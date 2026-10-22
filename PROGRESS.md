@@ -22,7 +22,8 @@ Source of truth between sessions. Trust `python3 tests/run_all.py` over this fil
       P=82308, 326k bars, 1355 feeds/frame. `python3 difftest.py 1000 20`: 20/20
       sequences bit-exact vs oracle for 1000 frames (state + win/lose; log in
       build/difftest_1000x20.log, 0.5 s/frame in C). Those runs never reach a win
-      (random resets); seeds >= 1000 (pure bot) cover the win path: running.
+      (random resets); `python3 difftest.py 1500 2 1000` (pure bot, seeds 1000/1001):
+      both bit-exact for 1500 frames, each including a full win (build/difftest_win.log).
 - [x] M7 playable — play.py (curses) drives the C sim from build/hardware.pkl;
       tests/test_play.py: no logic modules imported, frames == oracle, pty smoke run.
       ~2.8 fps measured (with background load).
