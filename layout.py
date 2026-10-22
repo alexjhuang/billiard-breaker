@@ -101,7 +101,7 @@ class Layout:
         X = u + (low.p - low.q) // 2 + (3 if keep == 'B' else 0)
         line = hi_line if keep == 'B' else low.p - low.q
         y = X - line
-        self.bar('V', y - 3, y, X)
+        return self.bar('V', y - 3, y, X)
 
     # --- running ----------------------------------------------------------
     def world(self, lanes, t0, period=None):

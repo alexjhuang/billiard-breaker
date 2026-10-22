@@ -15,7 +15,9 @@ Source of truth between sessions. Trust `python3 tests/run_all.py` over this fil
 - [x] M4 netlist — hw/logic.py DAG, hw/game.py (frame step as logic), hw/lower.py ->
       switch ops, netsim.py. Both DAG eval and gate-level netsim == oracle on random
       states (tests/test_netlist.py). Stats: 740 gates, 298 power, peak 105 live, ORX up to 32.
-- [ ] M5 layouter on small circuits
+- [x] M5 layouter on small circuits — plan.py (slots, lines, copies, lifts),
+      compile.py (bars + feeds, frame runner), debug.py (first wrong lane per slot).
+      2-bit counter (12 frames) and 4-bit accumulator (20 frames): CA == netsim.
 - [ ] M6 full game layout
 - [ ] M7 playable
 - [ ] M8 performance
@@ -32,7 +34,14 @@ Slot recipe (rows relative to resting row rho; every lane leaves at rho-32):
   A retime 12 dline -6, B retime 18. Lane pitch 40 (x-y units).
   Lesson: a 32-delay bump's top bar sits ~2 columns left of its u; keep
   vertical traffic >=4 columns away from bump zones.
-Next: M5 planner. Key constraint found while designing it: a messenger only
+Next: M6 full game. Game plan today: 1136 slots, 189 lines, P ~ 80k steps;
+python sparse sim ~0.4 s/frame for an 86-slot circuit, so the game needs the
+C simulator (M8) before 1000-frame tests are practical; start M6 with
+debug.first_fault on single frames. Bugs found in M5 (fixed): all ext inputs
+shared one power column (balls merged); drops in one column hit each other's
+bars (now lowest-first, 3 columns apart, slots widen); copy power lane was
+placed relative to the copy's ctrl instead of the original op's.
+Key constraint (still true): a messenger only
 falls, so every op's data lane must sit *below* all its control lanes; values
 therefore drift down the band during a frame, and next-state lanes must be
 lifted back up to the state lines at frame end ("lift" = up-jog + down-jog,
