@@ -130,3 +130,15 @@ recorded by world_run_trace (the K steps before a picture run serially and
 are recorded; the rest of the frame still runs on the tile threads). Walls
 are sent once as sorted, delta-coded 2x2 squares: 41 KB gzipped instead of
 1.1 MB. One shared game per server, and the machine pauses with no viewers.
+
+## 2026-10-22 — static site: the machine runs in the browser (web/engine.js)
+GitHub Pages serves only files, so the static export ships the hardware as
+data (ball schedule + readout cells in machine.json, the wall squares in
+walls.bin.gz) plus a JavaScript port of the serial simulator and frame runner,
+run in a Web Worker that posts the same events as web.py. It is plain JS
+because there is no WebAssembly toolchain here (no clang/emcc). The step uses
+one occupancy bitmap (walls | balls; a ball never sits on a wall), so a lone
+ball's block takes 4 reads instead of 8: 3.4 -> 6.7 frames/s under Node, about
+the C serial speed. Not done yet: threads in the browser need
+SharedArrayBuffer (cross-origin isolation, which Pages can only get through a
+service worker) and per-worker state for the ghost tiles.

@@ -85,9 +85,13 @@
 <div id="overlay"></div>
 <script>
 'use strict';
-// Everything shown here comes from the billiard-ball machine on the server:
-// the game state is read off its output lanes, the balls are its particles.
-// This page only draws them and sends keys. No game rules.
+// Everything shown here comes from the billiard-ball machine: the game state
+// is read off its output lanes, the balls are its particles. The machine runs
+// on the server (web.py), or, on the static site (web.py --export), in a Web
+// Worker in this browser (engine.js). This page only draws and sends keys.
+// No game rules.
+const STATIC = !!window.STATIC_SITE;
+let worker = null;
 const $ = id => document.getElementById(id);
 const dpr = () => window.devicePixelRatio || 1;
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
@@ -104,8 +108,9 @@ let live = false, fault = null;
 
 // ---------------------------------------------------------------- setup
 async function init() {
-  M = await (await fetch('/machine')).json();
-  const a = new Uint16Array(await (await fetch('/walls')).arrayBuffer());
+  M = await (await fetch(STATIC ? 'machine.json' : '/machine')).json();
+  const wr = await fetch(STATIC ? 'walls.bin.gz' : '/walls');  // the server sends it gzip-encoded
+  const a = new Uint16Array(await (STATIC ? new Response(wr.body.pipeThrough(new DecompressionStream('gzip'))) : wr).arrayBuffer());
   const n = a.length / 2;
   SQ = { u: new Int32Array(n), v: new Int32Array(n) };
   for (let i = 0, u = 0; i < n; i++) { u += a[2 * i]; SQ.u[i] = u; SQ.v[i] = a[2 * i + 1] + M.lo; }
@@ -115,7 +120,7 @@ async function init() {
     `${M.power} power balls, 3 key balls`;
   for (const id of ['gc', 'mc']) new ResizeObserver(() => resize(id)).observe($(id).parentElement);
   setupInput();
-  connect();
+  if (STATIC) runHere(a); else connect();
   requestAnimationFrame(draw);
 }
 
@@ -123,6 +128,19 @@ function resize(id) {
   const c = $(id), r = c.parentElement.getBoundingClientRect(), k = dpr();
   c.width = Math.max(1, Math.round(r.width * k)); c.height = Math.max(1, Math.round(r.height * k));
   if (id === 'mc') buildRing();
+}
+
+function runHere(squares) {  // static site: the machine runs in a worker, posting the same events
+  worker = new Worker('engine.js');
+  worker.onmessage = e => {
+    const d = e.data;
+    if (d.type === 'frame') onFrame(d); else if (d.type === 'pics') onPics(d); else if (d.type === 'fault') fault = d.error;
+  };
+  worker.onerror = e => { fault = e.message || 'the engine failed to start'; };
+  worker.postMessage({ type: 'init', meta: M, squares });
+  document.addEventListener('visibilitychange', () => worker.postMessage({ type: 'control', pause: document.hidden }));
+  live = true;
+  $('live').textContent = '● running in your browser'; $('live').style.color = '#7dffb5';
 }
 
 function connect() {
@@ -171,9 +189,12 @@ function popcount(x) { let n = 0; for (; x; x >>>= 1) n += x & 1; return n; }
 
 function decode(q) {  // base64 uint16 (u, v - lo) pairs, all steps of the picture
   if (!q.steps) {
-    const bin = atob(q.b), b = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) b[i] = bin.charCodeAt(i);
-    const a = new Uint16Array(b.buffer);
+    let a = q.raw;  // from the worker; from the server, base64
+    if (!a) {
+      const bin = atob(q.b), b = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) b[i] = bin.charCodeAt(i);
+      a = new Uint16Array(b.buffer);
+    }
     q.steps = []; let o = 0;
     for (const c of q.counts) { q.steps.push(a.subarray(2 * o, 2 * (o + c))); o += c; }
   }
@@ -181,7 +202,10 @@ function decode(q) {  // base64 uint16 (u, v - lo) pairs, all steps of the pictu
 }
 
 // ---------------------------------------------------------------- input
-function post(o) { fetch('/control', { method: 'POST', body: JSON.stringify(o), keepalive: true }).catch(() => {}); }
+function post(o) {
+  if (worker) worker.postMessage({ type: 'control', ...o });
+  else fetch('/control', { method: 'POST', body: JSON.stringify(o), keepalive: true }).catch(() => {});
+}
 const held = { left: false, right: false };
 function setKey(k, v) { if (held[k] !== v) { held[k] = v; post({ [k]: v ? 1 : 0 }); } }
 

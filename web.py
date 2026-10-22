@@ -1,6 +1,7 @@
 """Play brick breaker in a browser, next to a live view of the billiard machine.
 
     python3 web.py [--port 8000] [--host 127.0.0.1] [--threads 16] [--fps 20]
+    python3 web.py --export DIR      # static site (GitHub Pages): the machine runs in the browser
 
 then open http://localhost:8000 (from elsewhere: ssh -L 8000:localhost:8000 <host>,
 or --host 0.0.0.0 to serve the network).
@@ -27,7 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import fastsim
 import hardware
 from play import decode
-from state import H, PADDLE_W, PADDLE_Y, W, brick_at
+from state import FIELDS, H, PADDLE_W, PADDLE_Y, W, brick_at
 
 PICS = 3          # pictures of the machine per frame
 CLIP = 16         # steps per microscope clip
@@ -124,8 +125,14 @@ class Machine:
             self.publish('pics', dict(n=n, P=self.P, sweep=self.sweep, pics=[self.picture(start, *p) for p in pics]))
 
 
+GATES = {'power': 0, 'messenger': 0, 'input:left': 1, 'input:right': 2, 'input:reset': 3}
+
+
 def machine_info(hw):
-    """What the page needs to draw the machine: shape, wall squares, ports."""
+    """What the page needs to draw the machine (shape, wall squares, ports) and,
+    for the in-browser engine (web/engine.js), to run it: the per-frame ball
+    schedule (t - t_lo, x, y, gate: 0 always, 1/2/3 only while left/right/reset)
+    and the cells each output is read from."""
     U2, lo = 2 * hw['U'], hw['lo']
     t_lo = min(min(t for t, _, _ in hw['feeds']), min(t for t, _ in hw['reads'].values()))
     walls = set(map(tuple, hw['walls']))
@@ -151,7 +158,9 @@ def machine_info(hw):
                 walls=len(walls), squares=len(squares) // 2,
                 messengers=first.get('messenger', []), power=len(first.get('power', [])),
                 inputs={tag[6:]: v[0] for tag, v in first.items() if tag.startswith('input:')},
-                reads={name: [t - t_lo, *uv(*cells[0], U2)] for name, (t, cells) in hw['reads'].items()},
+                t_lo=t_lo, fields=FIELDS,
+                sched=sorted([t - t_lo, x, y, GATES[tag]] for t, cells, tag in hw['feeds'] for x, y in cells),
+                reads={name: [t - t_lo, cells] for name, (t, cells) in hw['reads'].items()},
                 field=dict(W=W, H=H, paddle_y=PADDLE_Y, paddle_w=PADDLE_W,
                            bricks=[[x0, y0, x1 - x0 + 1, y1 - y0 + 1] for i, (x0, y0, x1, y1) in sorted(bricks.items())]))
     return json.dumps(meta).encode(), gzip.compress(squares.tobytes(), 6)
@@ -240,9 +249,27 @@ def serve(host='127.0.0.1', port=8000, threads=16, fps=20):
     return srv
 
 
+def export(out):
+    """A static copy of the page that runs the machine in the visitor's browser
+    (web/engine.js in a Web Worker) instead of on this server."""
+    meta, walls = machine_info(hardware.load())
+    os.makedirs(out, exist_ok=True)
+    page = open(PAGE).read().replace('<script>\n', '<script>window.STATIC_SITE = true</script>\n<script>\n', 1)
+    files = {'index.html': page.encode(), 'machine.json': meta, 'walls.bin.gz': walls, '.nojekyll': b'',
+             'engine.js': open(os.path.join(os.path.dirname(PAGE), 'engine.js'), 'rb').read()}
+    for name, data in files.items():
+        with open(os.path.join(out, name), 'wb') as f:
+            f.write(data)
+    return files
+
+
 def main():
     opts = dict(host='127.0.0.1', port=8000, threads=16, fps=20)
     args = sys.argv[1:]
+    if '--export' in args:
+        out = args[args.index('--export') + 1]
+        print(f'static site in {out}:', ', '.join(f'{n} {len(d) // 1024} KB' for n, d in export(out).items()))
+        return
     for k in list(opts):
         if f'--{k}' in args:
             v = args[args.index(f'--{k}') + 1]

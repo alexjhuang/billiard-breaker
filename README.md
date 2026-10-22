@@ -55,6 +55,16 @@ To use it from another computer: `ssh -L 8000:localhost:8000 <host>`, or
 `python3 web.py --host 0.0.0.0`. Everyone watching shares one game. The
 machine (16 busy threads) pauses while nobody is connected.
 
+**Static version (GitHub Pages).** `python3 web.py --export DIR` writes the
+same page plus `web/engine.js`, a JavaScript port of the C simulator and the
+frame runner, and the hardware as data (~130 KB in all). The machine then runs
+in the visitor's browser, in a Web Worker on one core: 6.7 frames/s under Node
+on this machine and ~5 in headless Chromium here. A laptop core should do
+somewhat better. tests/test_engine.py checks the JS engine against the C
+simulator (states, flags and every recorded ball), and a 1000-frame run
+matched the oracle. To publish: `python3 web.py --export site`, then push
+`site/` to the `gh-pages` branch.
+
 ## How it works
 
 **Physics (sim.py, physics.py).** The world is a grid of cells updated in
