@@ -24,14 +24,24 @@ def _mask(w, h, pred):
     return int(bits[::-1], 2) if bits else 0
 
 
+_MASKS = {}
+
+
+def _masks(w, h):
+    if (w, h) not in _MASKS:
+        lane, keep = [], []
+        for o in (0, 1):
+            inside = lambda x, y, o=o: x - o >= 0 and y - o >= 0 and x - o < (w - o) // 2 * 2 and y - o < (h - o) // 2 * 2
+            lane.append(_mask(w, h, lambda x, y: inside(x, y) and (x - o) % 2 == 0 and (y - o) % 2 == 0))
+            keep.append(_mask(w, h, lambda x, y: not inside(x, y)))
+        _MASKS[w, h] = lane, keep
+    return _MASKS[w, h]
+
+
 class Grid:
     def __init__(self, w, h):
         self.w, self.h, self.g, self.t = w, h, 0, 0
-        self.lane, self.keep = [], []
-        for o in (0, 1):
-            inside = lambda x, y, o=o: x - o >= 0 and y - o >= 0 and x - o < (w - o) // 2 * 2 and y - o < (h - o) // 2 * 2
-            self.lane.append(_mask(w, h, lambda x, y: inside(x, y) and (x - o) % 2 == 0 and (y - o) % 2 == 0))
-            self.keep.append(_mask(w, h, lambda x, y: not inside(x, y)))
+        self.lane, self.keep = _masks(w, h)
 
     def set(self, x, y, v=1):
         bit = 1 << (y * self.w + x)
