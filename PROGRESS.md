@@ -20,11 +20,16 @@ Source of truth between sessions. Trust `python3 tests/run_all.py` over this fil
 - [ ] M9 finish
 
 ## Current
-M3 next: tile library. Key open problem below.
+M3 in progress: physics primitives found (see DECISIONS.md "the gate" and
+"floorplan"). Exploration scripts were in /tmp/bbexp (not kept). Next: encode
+the switch gate + crossing/mirror/splitter behaviour as tests in tests/, then a
+planning model (uv beams, rows, safe-crossing check) for the layouter.
 
 ## Open problems
-- Head-on interaction gate: pass-through outputs travel back along the other
-  input's pipe (reciprocity). Needs a tile design that sends them elsewhere.
+- (solved) head-on gates send pass-through outputs back up input pipes; the
+  perpendicular switch gate avoids this.
+- Performance: layouts will be ~10^7-10^8 cells but sparse (~10^3 balls);
+  a sparse/C simulator will be needed in M8.
 
 ## Dead ends
 - Single-particle balls: no 90° static mirror exists (brute force, see DECISIONS.md).
