@@ -59,3 +59,26 @@ def test_tiled_threads_match_serial_on_the_game():
         results.append((r.outputs, sorted(r.w.moving)))
     fastsim.FastCyl.threads, fastsim.FastCyl.epoch = 1, 32
     assert results[0] == results[1]
+
+
+def test_traced_runs_are_exact():
+    """Recording K steps before chosen times (the web view) changes nothing, and
+    the recorded cells are the same on 1 and 4 threads."""
+    import fastsim
+    import hardware
+    hw = hardware.load()
+    keys = [dict(left=0, right=0, reset=1)] + [dict(left=0, right=k % 2, reset=0) for k in range(2)]
+    results = []
+    for threads, traced in ((1, False), (1, True), (4, True)):
+        r = fastsim.Runner(hw)
+        r.w.threads = threads
+        recs = []
+        for inp in keys:
+            s = r.done_until
+            got = r.feed(inp, [(s + 5000, 16), (s + 20000, 1), (s + 41000, 3)] if traced else ())
+            for T, counts, uv in got or ():
+                assert len(counts) in (16, 1, 3) and sum(counts) * 2 == len(uv)
+                recs.append((T, counts, sorted(zip(uv[0::2], uv[1::2]))))
+        results.append((r.outputs, sorted(r.w.moving), recs))
+    assert results[0][:2] == results[1][:2] == results[2][:2]
+    assert results[1][2] == results[2][2] and len(results[1][2]) == 9

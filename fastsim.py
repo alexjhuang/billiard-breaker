@@ -37,6 +37,9 @@ def lib():
         L.world_cells.restype = I64
         L.world_cells.argtypes = [ctypes.c_void_p, P64, I64]
         L.world_prof.argtypes = [ctypes.POINTER(ctypes.c_double)]
+        L.world_run_trace.restype = I64
+        L.world_run_trace.argtypes = [ctypes.c_void_p, I64, I64, P64, I64, P64, ctypes.POINTER(ctypes.c_uint8),
+                                      ctypes.POINTER(ctypes.c_int32), I64, P64]
         L.world_run_tiles.argtypes = [ctypes.c_void_p, I64, I64, P64, I64, P64, ctypes.POINTER(ctypes.c_uint8),
                                       ctypes.c_int, I64]
         _lib = L
@@ -77,17 +80,33 @@ class FastCyl:
 
     threads, epoch = 1, 32  # >1 threads: overlapping tiles, `epoch` steps per barrier
 
-    def run(self, t_end, feeds=(), reads=()):
-        """feeds/reads: sorted lists of (t, x, y). Returns list of read bits."""
+    def run(self, t_end, feeds=(), reads=(), traces=()):
+        """feeds/reads: sorted lists of (t, x, y). Returns list of read bits.
+        traces: (T, K) pairs; the K steps up to time T run serially and the
+        moving cells after each are recorded: then returns (bits, [(T, counts,
+        flat [x + y, x - y, ...]) per trace])."""
         f = [v for e in feeds for v in e]
         r = [v for e in reads for v in e]
         out = (ctypes.c_uint8 * max(1, len(reads)))()
-        args = (self.w, t_end, len(feeds), _arr(f) if f else None, len(reads), _arr(r) if r else None, out)
+        args = (len(feeds), _arr(f) if f else None, len(reads), _arr(r) if r else None, out)
+        got = []
+        for T, K in sorted(traces):
+            assert self.t <= T - K and T <= t_end, (self.t, T, K, t_end)
+            self._run(T - K, args)
+            cap = K * (lib().world_count(self.w) + len(feeds) + 64)
+            uv, counts = (ctypes.c_int32 * (2 * cap))(), (ctypes.c_int64 * K)()
+            m = lib().world_run_trace(self.w, T, *args, uv, cap, counts)
+            assert sum(counts) == m, 'trace buffer too small'
+            got.append((T, list(counts), uv[:2 * m]))
+        self._run(t_end, args)
+        bits = list(out[:len(reads)])
+        return (bits, got) if traces else bits
+
+    def _run(self, t_end, args):
         if self.threads > 1:
-            lib().world_run_tiles(*args, self.threads, self.epoch)
+            lib().world_run_tiles(self.w, t_end, *args, self.threads, self.epoch)
         else:
-            lib().world_run(*args)
-        return list(out[:len(reads)])
+            lib().world_run(self.w, t_end, *args)
 
     def step(self, n=1):
         self.run(self.t + n)
@@ -128,8 +147,9 @@ class Runner:
         self.w.t = self.t_lo
         self.done_until = self.t_lo
 
-    def feed(self, inp):
-        """Add one more frame of inputs and run everything that is now determined."""
+    def feed(self, inp, traces=()):
+        """Add one more frame of inputs and run everything that is now determined.
+        traces: see FastCyl.run (times inside this frame's run); returned."""
         n, P = len(self.inputs), self.P
         self.inputs.append(inp)
         for t, cells, tag in self.feeds:
@@ -137,9 +157,9 @@ class Runner:
                 continue
             self.pending += [(t + n * P, x, y) for x, y in cells]
         # frame n's readouts need frames <= n of feeds; feeds of frame n+1 start at t_lo+(n+1)P
-        self.advance(self.t_lo + (n + 1) * P)
+        return self.advance(self.t_lo + (n + 1) * P, traces)
 
-    def advance(self, until):
+    def advance(self, until, traces=()):
         P = self.P
         feeds = sorted(e for e in self.pending if e[0] < until)
         self.pending = [e for e in self.pending if e[0] >= until]
@@ -153,7 +173,8 @@ class Runner:
                         reads.append((t, x, y))
                         keys.append((n, name))
         order = sorted(range(len(reads)), key=lambda k: reads[k])
-        bits = self.w.run(until, feeds, [reads[k] for k in order])
+        res = self.w.run(until, feeds, [reads[k] for k in order], traces)
+        bits, got_traces = res if traces else (res, None)
         got = {}
         for k, bit in zip(order, bits):
             got.setdefault(keys[k], []).append(bit)
@@ -164,6 +185,7 @@ class Runner:
             self.outputs[n][name] = int(sum(bs) == 2)
         self.done_until = until
         assert not self.w.broken
+        return got_traces
 
     def frame_ready(self, n):
         return len(self.outputs) > n and len(self.outputs[n]) == len(self.reads)

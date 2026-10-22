@@ -35,6 +35,8 @@ Source of truth between sessions. Trust `python3 tests/run_all.py` over this fil
 - [x] M9 finish — README.md with measured numbers, layout images, final report.
 
 ## Current
+Browser frontend done (2026-10-21): `python3 web.py`, see README "In a browser";
+tests/test_web.py (frames == oracle, pictures == a replay of the machine).
 All milestones done (2026-10-21); README.md has the final report. Next ideas:
 README "What I'd do next". Slot geometry is documented in compile.py.
 Lesson kept: a bump's top bar sits ~2 columns left of its u; keep vertical

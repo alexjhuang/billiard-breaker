@@ -152,10 +152,14 @@ static void step(World *w) {
 }
 
 /* Run from w->t until t_end. feeds: sorted by time, (t, x, y) triples, added
- * before the step at that time. reads: sorted (t, x, y); out[k] = occupied. */
-void world_run(World *w, int64_t t_end, int64_t nf, const int64_t *feeds,
-               int64_t nr, const int64_t *reads, uint8_t *out) {
-    int64_t fi = 0, ri = 0;
+ * before the step at that time. reads: sorted (t, x, y); out[k] = occupied
+ * (only reads inside [w->t, t_end) are written, so calls can share `out`).
+ * world_run_trace also records the moving cells after every step as
+ * (x + y, x - y) pairs: counts[k] after step k, into uv (at most cap pairs). */
+int64_t world_run_trace(World *w, int64_t t_end, int64_t nf, const int64_t *feeds,
+                        int64_t nr, const int64_t *reads, uint8_t *out,
+                        int32_t *uv, int64_t cap, int64_t *counts) {
+    int64_t fi = 0, ri = 0, m = 0, k = 0;
     while (fi < nf && feeds[3 * fi] < w->t) fi++;
     while (ri < nr && reads[3 * ri] < w->t) ri++;
     while (w->t < t_end) {
@@ -166,7 +170,18 @@ void world_run(World *w, int64_t t_end, int64_t nf, const int64_t *feeds,
             ri++;
         }
         step(w);
+        if (!counts) continue;
+        counts[k++] = w->n;
+        for (int64_t j = 0; j < w->n && m < cap; j++, m++) {
+            uv[2 * m] = w->pu[j]; uv[2 * m + 1] = w->pv[j] - PAD + (int32_t)w->lo;
+        }
     }
+    return m;
+}
+
+void world_run(World *w, int64_t t_end, int64_t nf, const int64_t *feeds,
+               int64_t nr, const int64_t *reads, uint8_t *out) {
+    world_run_trace(w, t_end, nf, feeds, nr, reads, out, NULL, 0, NULL);
 }
 
 int64_t world_count(World *w) { return w->n; }
@@ -330,7 +345,6 @@ void world_run_tiles(World *w, int64_t t_end, int64_t nf, const int64_t *feeds,
                      int64_t nr, const int64_t *reads, uint8_t *out, int T, int64_t D) {
     TP M; memset(&M, 0, sizeof M);
     M.w = w; M.T = T; M.out = out;
-    for (int64_t j = 0; j < nr; j++) out[j] = 0;
     M.tl = calloc(T, sizeof(Tile));
     int64_t words = w->N / 64 + 1;
     if (w->ntile_mov < T) {  /* allocate once and touch now: page faults later would stall an epoch */

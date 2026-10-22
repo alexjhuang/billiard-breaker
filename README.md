@@ -10,12 +10,50 @@ balls bouncing off mirrors and each other.
 ```
 python3 game_machine.py     # compile the game into mirrors + a ball schedule (build/, ~10 s)
 python3 play.py             # play it (a/d or arrows, r reset, q quit; terminal >= 66x35)
+python3 web.py              # or in a browser, next to a live view of the machine: http://localhost:8000
 python3 play_oracle.py      # the same game in plain Python, for comparison
 python3 tests/run_all.py    # all tests, incl. the 20 x 1000-frame differential test (~3 min)
 python3 difftest.py 1000 20 --threads 4   # billiard machine vs reference, 20 x 1000 frames
 ```
 
 Needs Python 3.12 (stdlib only) and gcc, which builds the C simulator on first use.
+
+## In a browser
+
+![web](docs/web.jpg)
+
+`python3 web.py` serves a page with two panels side by side, filling the window.
+
+- **The game** (left), drawn with canvas graphics from the state the machine
+  reads out each frame. Keys are sent while held, so the paddle moves on every
+  frame you hold them.
+- **The billiard-ball computer** (right). The world is a loop, so it is drawn
+  as a ring: angle = position along the loop, radius = height in the band. The
+  faint texture is the 1.17 M mirror cells. Every moving ball is drawn at its
+  real position, coloured by direction: data lanes, falling gate messengers,
+  and jogs. The pictures come from the frame being computed while the game
+  shows the previous one. A frame is 43 456 steps, about 1/20 s, too fast to
+  watch, so by default it works like a stroboscope. Each picture is a real
+  moment of the current frame, a little later in the frame than the last one,
+  so the computation front sweeps around the ring once every 8 s (slider: 1–32 s
+  or real time).
+- **The microscope** (centre) replays 16 real consecutive steps from ≤ ~0.5 s
+  ago at 40 steps/s: balls, mirrors, and messengers hopping past lanes.
+  Clicking the ring picks a depth, and the microscope then follows the gate
+  messenger falling through that depth. Click "follow gates" to pin a spot
+  instead. The mouse wheel zooms.
+
+The server (`web.py`, stdlib only) runs the same C simulator as `play.py`.
+Frames and ball positions stream to the page as server-sent events, and keys
+come back as POSTs. Neither the server nor the page contains any game rules.
+tests/test_web.py checks the frames against the oracle, and checks that every
+picture matches a separate replay of the machine at the stated steps. Measured
+here: 20 frames/s (the default `--fps` cap) at ~40 ms of compute per frame, and
+~115 KB/s per viewer.
+
+To use it from another computer: `ssh -L 8000:localhost:8000 <host>`, or
+`python3 web.py --host 0.0.0.0`. Everyone watching shares one game. The
+machine (16 busy threads) pauses while nobody is connected.
 
 ## How it works
 
@@ -134,5 +172,5 @@ right bring next-state values back up. `docs/slot.png` zooms in on one gate.
 `SPEC.md` game rules · `oracle.py` reference game · `hw/` logic and lowering ·
 `plan.py`, `compile.py`, `layout.py`, `physics.py` compiler · `sim.py`, `cyl.py`
 Python simulators · `csim/bbm.c`, `fastsim.py` C simulator · `play.py`,
-`screen.py` frontend · `debug.py` fault finder · `difftest.py` differential test ·
+`screen.py` terminal frontend · `web.py`, `web/index.html` browser frontend · `debug.py` fault finder · `difftest.py` differential test ·
 `DECISIONS.md` design log · `PROGRESS.md` work log.

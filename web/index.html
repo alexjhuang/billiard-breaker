@@ -1,0 +1,539 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Billiard Breaker — brick breaker on a billiard-ball computer</title>
+<style>
+  :root { --bg: #05060d; --panel: #080b18; --ink: #d7def7; --dim: #7c86ad; --cyan: #5ad1ff; --amber: #ffb347;
+          --pink: #ff5e9c; --line: #1a2142; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); overflow: hidden;
+               font: 14px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #app { display: grid; grid-template-columns: 1fr 1fr; width: 100vw; height: 100vh; }
+  .panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
+  #game { background: radial-gradient(120% 90% at 50% 40%, #0f1530 0%, #070914 70%); }
+  #machine { background: radial-gradient(110% 90% at 50% 50%, #0b1026 0%, #05060d 75%); border-left: 1px solid var(--line); }
+  header { padding: 14px 22px 6px; display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap; }
+  h1, h2 { margin: 0; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+  h1 { font-size: 20px; background: linear-gradient(90deg, #7fe3ff, #ff7eb6); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  h2 { font-size: 15px; color: #c9d3ff; }
+  .stats { display: flex; gap: 16px; color: var(--dim); font-variant-numeric: tabular-nums; flex-wrap: wrap; }
+  .stats b { color: var(--ink); font-weight: 600; }
+  .stage { flex: 1; position: relative; min-height: 0; }
+  .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  footer { padding: 6px 22px 14px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; color: var(--dim); font-size: 13px; }
+  kbd { display: inline-block; min-width: 22px; padding: 1px 6px; border: 1px solid #2b3566; border-bottom-width: 2px;
+        border-radius: 5px; background: #0e1430; color: var(--ink); font: 12px ui-monospace, monospace; text-align: center; }
+  button { background: #0f1636; color: var(--ink); border: 1px solid #2b3566; border-radius: 8px; padding: 6px 12px;
+           font: inherit; cursor: pointer; user-select: none; touch-action: none; }
+  button:hover { border-color: #4a5aa8; }
+  button.on { border-color: var(--cyan); color: var(--cyan); }
+  .touch button { font-size: 18px; padding: 6px 16px; }
+  .grow { flex: 1; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; vertical-align: 0; }
+  input[type=range] { accent-color: var(--cyan); width: 130px; vertical-align: middle; }
+  .note { color: #5d6790; font-size: 12px; }
+  #minfo { flex-basis: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #machine header .stats { font-size: 13px; gap: 12px; }
+  #overlay { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; text-align: center;
+             background: rgba(5, 6, 13, .78); color: var(--ink); font-size: 18px; z-index: 5; padding: 40px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <section class="panel" id="game">
+    <header>
+      <h1>Billiard Breaker</h1>
+      <div class="stats">
+        <span>lives <b id="lives">–</b></span>
+        <span>bricks <b id="bricks">–</b></span>
+        <span>frame <b id="frame">–</b></span>
+      </div>
+    </header>
+    <div class="stage"><canvas id="gc"></canvas></div>
+    <footer>
+      <span><kbd>←</kbd> <kbd>→</kbd> or <kbd>A</kbd> <kbd>D</kbd> move &nbsp; <kbd>R</kbd> restart</span>
+      <span class="touch"><button id="b-left">◀</button> <button id="b-right">▶</button> <button id="b-reset">⟲</button></span>
+      <span class="grow"></span>
+      <span id="speed" class="stats"></span>
+    </footer>
+  </section>
+  <section class="panel" id="machine">
+    <header>
+      <h2>The billiard-ball computer</h2>
+      <span id="live" class="note">○ connecting</span>
+      <div class="stats" id="mstats">connecting…</div>
+      <div class="note" id="minfo"></div>
+    </header>
+    <div class="stage"><canvas id="mc"></canvas></div>
+    <footer>
+      <span class="legend">
+        <span><i class="dot" style="background:var(--cyan)"></i>data lanes →</span>
+        <span><i class="dot" style="background:var(--amber)"></i>gate messengers ↓</span>
+        <span><i class="dot" style="background:var(--pink)"></i>jogs ↑</span>
+        <span><i class="dot" style="background:#b8f27c"></i>←</span>
+      </span>
+      <span class="grow"></span>
+      <label>time-lapse <input id="sweep" type="range" min="0" max="6" step="1" value="4"> <b id="sweepv"></b></label>
+      <button id="follow" class="on" title="follow a gate messenger at the clicked depth, or stay at the clicked spot">follow gates</button>
+    </footer>
+  </section>
+</div>
+<div id="overlay"></div>
+<script>
+'use strict';
+// Everything shown here comes from the billiard-ball machine on the server:
+// the game state is read off its output lanes, the balls are its particles.
+// This page only draws them and sends keys. No game rules.
+const $ = id => document.getElementById(id);
+const dpr = () => window.devicePixelRatio || 1;
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+const COLORS = ['#5ad1ff', '#ffb347', '#ff6bd6', '#b8f27c'];  // by direction: +u, falling, rising, -u
+const BRICK = [['#ff6b9a', '#c2306a'], ['#ffa25c', '#c96520'], ['#ffe066', '#c7a414'], ['#5ee6b0', '#1f9e74']];
+const SWEEPS = [0, 1, 2, 4, 8, 16, 32];  // seconds per sweep of a frame's computation; 0 = real time
+const CLIP_RATE = 40;  // microscope: machine steps shown per second
+
+let M = null, SQ = null;          // machine description, wall squares (sorted by u)
+const game = { prev: null, cur: null, t: 0, period: 0.06, parts: [], trail: [], lost: 0, flash: {} };
+const mach = { batch: null, t: 0, period: 0.06, lastPh: 0, clip: null, next: null, clipT: 0,
+               follow: true, depth: -400, pin: [0, -400], span: 90, R: null, sprites: null, info: null };
+let live = false, fault = null;
+
+// ---------------------------------------------------------------- setup
+async function init() {
+  M = await (await fetch('/machine')).json();
+  const a = new Uint16Array(await (await fetch('/walls')).arrayBuffer());
+  const n = a.length / 2;
+  SQ = { u: new Int32Array(n), v: new Int32Array(n) };
+  for (let i = 0, u = 0; i < n; i++) { u += a[2 * i]; SQ.u[i] = u; SQ.v[i] = a[2 * i + 1] + M.lo; }
+  M.msg = M.messengers.map(m => m[0]);
+  $('minfo').title = $('minfo').textContent = `a loop of ${(M.U2 / 2).toLocaleString()} × ${(M.hi - M.lo + 1).toLocaleString()} cells · ` +
+    `${M.walls.toLocaleString()} mirror cells · each frame: ${M.messengers.length} gates (one falling messenger each), ` +
+    `${M.power} power balls, 3 key balls`;
+  for (const id of ['gc', 'mc']) new ResizeObserver(() => resize(id)).observe($(id).parentElement);
+  setupInput();
+  connect();
+  requestAnimationFrame(draw);
+}
+
+function resize(id) {
+  const c = $(id), r = c.parentElement.getBoundingClientRect(), k = dpr();
+  c.width = Math.max(1, Math.round(r.width * k)); c.height = Math.max(1, Math.round(r.height * k));
+  if (id === 'mc') buildRing();
+}
+
+function connect() {
+  const es = new EventSource('/events');
+  const show = () => { $('live').textContent = live ? '● live' : '○ reconnecting…'; $('live').style.color = live ? '#7dffb5' : '#ff7a9c'; };
+  es.onopen = () => { live = true; show(); };
+  es.onerror = () => { live = false; show(); };
+  es.addEventListener('frame', e => onFrame(JSON.parse(e.data)));
+  es.addEventListener('pics', e => onPics(JSON.parse(e.data)));
+  es.addEventListener('fault', e => { fault = JSON.parse(e.data).error; });
+}
+
+// ---------------------------------------------------------------- events from the machine
+function onFrame(f) {
+  const now = performance.now() / 1000, old = game.cur;
+  if (old) {
+    game.period = clamp(0.8 * game.period + 0.2 * (now - game.t), 1 / 60, 1);
+    const gone = (old.state.bricks & ~f.state.bricks) >>> 0;
+    if (gone && !f.inp.reset && old.n > 0)
+      for (let i = 0; i < 32; i++) if (gone >>> i & 1) burst(i);
+    if (f.state.lives < old.state.lives && !f.inp.reset) game.lost = now;
+  }
+  for (const k of ['left', 'right', 'reset']) if (f.inp[k]) game.flash[k] = now;
+  game.prev = old; game.cur = f; game.t = now;
+  const s = f.state, boot = f.n === 0;
+  $('lives').textContent = boot ? '–' : '●'.repeat(s.lives) || '0';
+  $('bricks').textContent = boot ? '–' : `${popcount(s.bricks)} / 32`;
+  $('frame').textContent = f.n;
+  $('speed').innerHTML = `computed by the billiard balls in <b>${f.ms.toFixed(0)} ms</b> · <b>${f.fps.toFixed(1)}</b> frames/s`;
+}
+
+function onPics(p) {
+  const now = performance.now() / 1000;
+  if (mach.batch) mach.period = clamp(0.8 * mach.period + 0.2 * (now - mach.t), 1 / 60, 1);
+  const P = p.P, d = ph => ((ph - mach.lastPh) % P + P) % P;
+  p.pics.sort((a, b) => d(a.ph) - d(b.ph));   // in sweep order (phases wrap around the frame)
+  mach.lastPh = p.pics[p.pics.length - 1].ph;
+  for (const q of p.pics) if (q.counts.length > 1) mach.next = { pic: q, n: p.n };
+  mach.batch = p; mach.t = now;
+  const k = Math.round(Math.log2(p.sweep || 0.5)) + 1;
+  $('sweep').value = p.sweep ? clamp(k, 1, 6) : 0;
+  $('sweepv').textContent = p.sweep ? `1 frame per ${p.sweep} s` : 'real time';
+}
+
+function popcount(x) { let n = 0; for (; x; x >>>= 1) n += x & 1; return n; }
+
+function decode(q) {  // base64 uint16 (u, v - lo) pairs, all steps of the picture
+  if (!q.steps) {
+    const bin = atob(q.b), b = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) b[i] = bin.charCodeAt(i);
+    const a = new Uint16Array(b.buffer);
+    q.steps = []; let o = 0;
+    for (const c of q.counts) { q.steps.push(a.subarray(2 * o, 2 * (o + c))); o += c; }
+  }
+  return q.steps;
+}
+
+// ---------------------------------------------------------------- input
+function post(o) { fetch('/control', { method: 'POST', body: JSON.stringify(o), keepalive: true }).catch(() => {}); }
+const held = { left: false, right: false };
+function setKey(k, v) { if (held[k] !== v) { held[k] = v; post({ [k]: v ? 1 : 0 }); } }
+
+function setupInput() {
+  const keyOf = e => ({ ArrowLeft: 'left', a: 'left', A: 'left', ArrowRight: 'right', d: 'right', D: 'right' })[e.key];
+  addEventListener('keydown', e => {
+    const k = keyOf(e);
+    if (k) { e.preventDefault(); setKey(k, true); }
+    else if ((e.key === 'r' || e.key === 'R') && !e.repeat) post({ reset: 1 });
+  });
+  addEventListener('keyup', e => { const k = keyOf(e); if (k) setKey(k, false); });
+  addEventListener('blur', () => { setKey('left', false); setKey('right', false); });
+  for (const k of ['left', 'right']) {
+    const b = $('b-' + k);
+    b.addEventListener('pointerdown', e => { b.setPointerCapture(e.pointerId); setKey(k, true); });
+    for (const ev of ['pointerup', 'pointercancel']) b.addEventListener(ev, () => setKey(k, false));
+  }
+  $('b-reset').addEventListener('click', () => post({ reset: 1 }));
+  $('sweep').addEventListener('input', e => post({ sweep: SWEEPS[+e.target.value] }));
+  $('follow').addEventListener('click', () => {
+    mach.follow = !mach.follow;
+    $('follow').classList.toggle('on', mach.follow);
+    $('follow').textContent = mach.follow ? 'follow gates' : 'pinned';
+  });
+  $('mc').addEventListener('click', e => {
+    const R = mach.R, k = dpr(), r0 = e.target.getBoundingClientRect();
+    const x = (e.clientX - r0.left) * k - R.cx, y = (e.clientY - r0.top) * k - R.cy, r = Math.hypot(x, y);
+    if (r < R.ri || r > R.ro) return;
+    const v = M.lo + (r - R.ri) / (R.ro - R.ri) * (M.hi - M.lo);
+    const u = ((Math.atan2(y, x) + Math.PI / 2) / (2 * Math.PI) * M.U2 % M.U2 + M.U2) % M.U2;
+    mach.depth = v; mach.pin = [Math.round(u), Math.round(v)];
+  });
+  $('mc').addEventListener('wheel', e => {
+    e.preventDefault();
+    mach.span = clamp(mach.span * Math.pow(1.15, Math.sign(e.deltaY)), 40, 1200);
+  }, { passive: false });
+}
+
+// ---------------------------------------------------------------- game panel
+function burst(i) {
+  const [x, y, w, h] = M.field.bricks[i], col = BRICK[(y - 8) >> 1 & 3][0];
+  for (let k = 0; k < 18; k++)
+    game.parts.push({ x: x + Math.random() * w, y: y + Math.random() * h, vx: (Math.random() - .5) * 14,
+                      vy: (Math.random() - .7) * 12, t: 0, life: .5 + Math.random() * .5, col });
+}
+
+function drawGame(now, dt) {
+  const c = $('gc'), g = c.getContext('2d'), k = dpr(), w = c.width / k, h = c.height / k;
+  g.setTransform(k, 0, 0, k, 0, 0);
+  g.clearRect(0, 0, w, h);
+  const F = M.field, cs = Math.max(4, Math.floor(Math.min((w - 24) / F.W, (h - 24) / F.H)));
+  const fw = cs * F.W, fh = cs * F.H, ox = Math.round((w - fw) / 2), oy = Math.round((h - fh) / 2);
+  // field and its walls (open at the bottom)
+  const bg = g.createLinearGradient(0, oy, 0, oy + fh);
+  bg.addColorStop(0, '#0d1433'); bg.addColorStop(1, '#090c1e');
+  g.fillStyle = bg; g.fillRect(ox, oy, fw, fh);
+  g.strokeStyle = 'rgba(120,140,255,.05)'; g.lineWidth = 1; g.beginPath();
+  for (let i = 1; i < F.W; i++) { g.moveTo(ox + i * cs + .5, oy); g.lineTo(ox + i * cs + .5, oy + fh); }
+  for (let j = 1; j < F.H; j++) { g.moveTo(ox, oy + j * cs + .5); g.lineTo(ox + fw, oy + j * cs + .5); }
+  g.stroke();
+  g.save(); g.shadowColor = '#5ad1ff'; g.shadowBlur = 14; g.strokeStyle = '#6fd8ff'; g.lineWidth = 3;
+  g.beginPath(); g.moveTo(ox - 2, oy + fh); g.lineTo(ox - 2, oy - 2); g.lineTo(ox + fw + 2, oy - 2); g.lineTo(ox + fw + 2, oy + fh); g.stroke();
+  g.restore();
+  const lostA = clamp(1 - (now - game.lost) / .6, 0, 1);
+  g.fillStyle = `rgba(255,70,110,${.25 + .6 * lostA})`; g.fillRect(ox, oy + fh - 2, fw, 2);
+  if (lostA > 0) { const lg = g.createLinearGradient(0, oy + fh - 6 * cs, 0, oy + fh);
+    lg.addColorStop(0, 'rgba(255,60,100,0)'); lg.addColorStop(1, `rgba(255,60,100,${.35 * lostA})`);
+    g.fillStyle = lg; g.fillRect(ox, oy + fh - 6 * cs, fw, 6 * cs); }
+
+  const f = game.cur;
+  if (f && f.n > 0) {
+    const s = f.state, p = game.prev && game.prev.n > 0 ? game.prev.state : s;
+    // bricks
+    for (let i = 0; i < 32; i++) {
+      if (!(s.bricks >>> i & 1)) continue;
+      const [x, y, bw, bh] = F.bricks[i], [c1, c2] = BRICK[(y - 8) >> 1 & 3];
+      const X = ox + x * cs + 2, Y = oy + y * cs + 2, Wd = bw * cs - 4, Ht = bh * cs - 4;
+      const gr = g.createLinearGradient(0, Y, 0, Y + Ht); gr.addColorStop(0, c1); gr.addColorStop(1, c2);
+      g.save(); g.shadowColor = c1; g.shadowBlur = 10; g.fillStyle = gr;
+      g.beginPath(); g.roundRect(X, Y, Wd, Ht, Math.min(6, cs / 3)); g.fill(); g.restore();
+      g.fillStyle = 'rgba(255,255,255,.35)'; g.fillRect(X + 4, Y + 3, Wd - 8, Math.max(1, cs / 8));
+    }
+    // paddle and ball, eased from the previous frame
+    const a = clamp((now - game.t) / game.period, 0, 1), ap = clamp((now - game.t) / (game.period * .4), 0, 1);
+    const near = Math.abs(s.bx - p.bx) <= 1 && Math.abs(s.by - p.by) <= 1;
+    const bx = near ? p.bx + (s.bx - p.bx) * a : s.bx, by = near ? p.by + (s.by - p.by) * a : s.by;
+    const px = Math.abs(s.px - p.px) <= 1 ? p.px + (s.px - p.px) * ap : s.px;
+    const PX = ox + px * cs + 2, PY = oy + F.paddle_y * cs + cs * .15, PW = F.paddle_w * cs - 4, PH = cs * .7;
+    const pg = g.createLinearGradient(0, PY, 0, PY + PH); pg.addColorStop(0, '#e6f7ff'); pg.addColorStop(.5, '#5ad1ff'); pg.addColorStop(1, '#2a6fd6');
+    g.save(); g.shadowColor = '#5ad1ff'; g.shadowBlur = 18; g.fillStyle = pg;
+    g.beginPath(); g.roundRect(PX, PY, PW, PH, PH / 2); g.fill(); g.restore();
+    if (!near) game.trail.length = 0;  // respawned: no trail across the jump
+    game.trail.push([bx, by]); if (game.trail.length > 10) game.trail.shift();
+    game.trail.forEach(([tx, ty], i) => {
+      g.fillStyle = `rgba(160,220,255,${.05 + .3 * i / game.trail.length})`;
+      g.beginPath(); g.arc(ox + (tx + .5) * cs, oy + (ty + .5) * cs, cs * .38 * (.4 + .6 * i / game.trail.length), 0, 7); g.fill();
+    });
+    const BX = ox + (bx + .5) * cs, BY = oy + (by + .5) * cs, br = cs * .42;
+    const bgr = g.createRadialGradient(BX - br / 3, BY - br / 3, br / 8, BX, BY, br);
+    bgr.addColorStop(0, '#ffffff'); bgr.addColorStop(1, '#9fdcff');
+    g.save(); g.shadowColor = '#bfe9ff'; g.shadowBlur = 20; g.fillStyle = bgr;
+    g.beginPath(); g.arc(BX, BY, br, 0, 7); g.fill(); g.restore();
+  }
+  // brick shards
+  game.parts = game.parts.filter(q => (q.t += dt) < q.life);
+  for (const q of game.parts) {
+    q.vy += 30 * dt; q.x += q.vx * dt; q.y += q.vy * dt;
+    g.globalAlpha = 1 - q.t / q.life; g.fillStyle = q.col;
+    g.fillRect(ox + q.x * cs - 2, oy + q.y * cs - 2, 4, 4);
+  }
+  g.globalAlpha = 1;
+  // messages
+  let msg = null, sub = null;
+  if (!f) msg = 'connecting…';
+  else if (f.n === 0) { msg = 'booting'; sub = 'the circuit resets itself on its first frame'; }
+  else if (f.win) { msg = 'YOU WIN'; sub = 'press R to play again'; }
+  else if (f.lose) { msg = 'GAME OVER'; sub = 'press R to play again'; }
+  if (msg) {
+    g.fillStyle = 'rgba(5,6,13,.55)'; g.fillRect(ox, oy + fh * .62, fw, fh * .2);
+    g.textAlign = 'center'; g.fillStyle = f && f.win ? '#7dffb5' : f && f.lose ? '#ff7a9c' : '#cfe3ff';
+    g.save(); g.shadowColor = g.fillStyle; g.shadowBlur = 18;
+    g.font = `800 ${Math.round(cs * 2.2)}px ui-sans-serif, system-ui, sans-serif`;
+    g.fillText(msg, ox + fw / 2, oy + fh * .72); g.restore();
+    if (sub) { g.fillStyle = '#9aa6d6'; g.font = `${Math.round(cs * .75)}px ui-sans-serif, system-ui, sans-serif`;
+      g.fillText(sub, ox + fw / 2, oy + fh * .78); }
+  }
+}
+
+// ---------------------------------------------------------------- machine panel
+// The world is a loop: angle = position u along it (x + y), radius = height v in the band (x - y).
+const ang = u => -Math.PI / 2 + 2 * Math.PI * u / M.U2;
+const rad = v => mach.R.ri + (v - M.lo) / (M.hi - M.lo) * (mach.R.ro - mach.R.ri);
+const wrapU = d => ((d % M.U2) + M.U2 + M.U2 / 2) % M.U2 - M.U2 / 2;
+// direction of a lone ball from its corner in the Margolus block (o = time parity)
+const dirOf = (u, v, o) => (((u + v) >> 1) - o & 1) + 2 * (((u - v) >> 1) - o & 1);
+
+function sprite(col, r) {
+  const c = document.createElement('canvas'); c.width = c.height = 2 * r;
+  const g = c.getContext('2d'), gr = g.createRadialGradient(r, r, 0, r, r, r);
+  gr.addColorStop(0, '#ffffff'); gr.addColorStop(.18, col); gr.addColorStop(.45, col + '55'); gr.addColorStop(1, col + '00');
+  g.fillStyle = gr; g.fillRect(0, 0, 2 * r, 2 * r); return c;
+}
+
+function buildRing() {
+  if (!SQ) return;
+  const c = $('mc'), w = c.width, h = c.height, k = dpr();
+  const ro = Math.min(w / 2 - 14 * k, h / 2 - 34 * k), R = mach.R = { cx: w / 2, cy: h / 2, ro, ri: ro * .52 };
+  R.rl = R.ri - 10 * k;
+  mach.sprites = COLORS.map(col => sprite(col, Math.round(5 * k)));
+  const bg = document.createElement('canvas'); bg.width = w; bg.height = h;
+  const g = bg.getContext('2d');
+  g.beginPath(); g.arc(R.cx, R.cy, R.ro + 2 * k, 0, 7); g.arc(R.cx, R.cy, R.ri - 2 * k, 0, 7, true);
+  g.fillStyle = '#0a0f26'; g.fill();
+  // mirrors: density of wall squares per pixel
+  const dens = new Uint16Array(w * h);
+  for (let i = 0; i < SQ.u.length; i++) {
+    const a = ang(SQ.u[i]), r = rad(SQ.v[i]);
+    const x = R.cx + r * Math.cos(a) | 0, y = R.cy + r * Math.sin(a) | 0;
+    if (x >= 0 && y >= 0 && x < w && y < h) dens[y * w + x]++;
+  }
+  const wc = document.createElement('canvas'); wc.width = w; wc.height = h;
+  const wg = wc.getContext('2d'), img = wg.createImageData(w, h);
+  for (let p = 0; p < dens.length; p++) if (dens[p]) {
+    const a = Math.min(1, .35 + dens[p] / 8);
+    img.data[4 * p] = 92; img.data[4 * p + 1] = 118; img.data[4 * p + 2] = 196; img.data[4 * p + 3] = 255 * a;
+  }
+  wg.putImageData(img, 0, 0); g.drawImage(wc, 0, 0);
+  g.strokeStyle = '#25305e'; g.lineWidth = k;
+  for (const r of [R.ro + 2 * k, R.ri - 2 * k]) { g.beginPath(); g.arc(R.cx, R.cy, r, 0, 7); g.stroke(); }
+  // the frame boundary: where the state lanes are read and the keys come in
+  g.strokeStyle = '#8a95c9'; g.beginPath(); g.moveTo(R.cx, R.cy - R.ro - 4 * k); g.lineTo(R.cx, R.cy - R.ro - 16 * k); g.stroke();
+  g.fillStyle = '#8a95c9'; g.font = `${11 * k}px ui-sans-serif, system-ui, sans-serif`; g.textAlign = 'center';
+  g.fillText('frame boundary: state read, keys in', R.cx, R.cy - R.ro - 20 * k);
+  g.textAlign = 'left'; g.fillStyle = '#5d6790';
+  g.fillText('↻ lanes circle once per frame', 14 * k, h - 46 * k);
+  g.fillText('outer edge: top of the band', 14 * k, h - 30 * k);
+  g.fillText('inner edge: bottom (sinks)', 14 * k, h - 14 * k);
+  R.bg = bg;
+}
+
+function currentPic(now) {
+  const b = mach.batch;
+  if (!b) return null;
+  const j = Math.min(b.pics.length - 1, Math.floor((now - mach.t) / (mach.period / b.pics.length)));
+  return b.pics[j];
+}
+
+function activeMessenger(ph) {  // index of the newest gate messenger at phase ph (frame-relative)
+  let a = 0, b = M.msg.length;
+  while (a < b) { const m = (a + b) >> 1; if (M.msg[m] <= ph) a = m + 1; else b = m; }
+  return a - 1;  // -1: still the previous frame's last one
+}
+
+// Follow mode: ride with the gate messenger that is falling through the chosen
+// depth during this clip; between gates (end of frame), ride with the data
+// lanes at that depth; failing both, stay put.
+function lensTarget(pic, ph0) {
+  const v0 = M.messengers[0][2], want = ph0 - (v0 - mach.depth) / 2;
+  let i = activeMessenger(want), shift = 0;
+  if (i < 0) { i = activeMessenger(want + M.P); shift = -M.P; }
+  if (i >= 0) {
+    const [t, u, v] = M.messengers[i];
+    if (Math.abs(v - 2 * (ph0 - t - shift) - mach.depth) < 300) return { u, v, t: t + shift };
+  }
+  const cells = decode(pic)[0], o = ph0 & 1, us = [];
+  for (let j = 0; j < cells.length; j += 2) {
+    const u = cells[j], v = cells[j + 1] + M.lo;
+    if (Math.abs(v - mach.depth) < 250 && dirOf(u, v, o) === 0) us.push(u);
+  }
+  if (us.length) {
+    const ds = us.map(u => wrapU(u - us[0])).sort((a, b) => a - b);
+    return { u: us[0] + ds[ds.length >> 1], v: mach.depth, lane: true };
+  }
+  return mach.ctr ? { u: mach.ctr.u, v: mach.ctr.v, still: true } : null;
+}
+
+function lensCenter() {
+  const cl = mach.clip, T = cl && cl.target;
+  if (!mach.follow || !T) return { u: mach.pin[0], v: mach.pin[1] };
+  if (T.still) return { u: T.u, v: T.v };
+  if (T.lane) return { u: (T.u + 2 * cl.k) % M.U2, v: T.v };  // lanes move 2 per step
+  return { u: T.u, v: clamp(T.v - 2 * (cl.ph0 + cl.k - T.t), M.lo, M.hi) };  // messengers fall 2 per step
+}
+
+function drawMachine(now) {
+  const c = $('mc'), g = c.getContext('2d'), R = mach.R, k = dpr();
+  if (!R || !R.bg) return;
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.clearRect(0, 0, c.width, c.height);
+  g.drawImage(R.bg, 0, 0);
+  const q = currentPic(now);
+  if (q) {
+    const P = mach.batch.P, steps = decode(q), cells = steps[steps.length - 1], o = q.ph & 1;
+    // the gate being executed now: where its messenger enters at the top of the band
+    const i = activeMessenger(q.ph);
+    if (i >= 0) {
+      const a = ang(M.messengers[i][1]);
+      const gr = g.createLinearGradient(R.cx + R.ri * Math.cos(a), R.cy + R.ri * Math.sin(a), R.cx + R.ro * Math.cos(a), R.cy + R.ro * Math.sin(a));
+      gr.addColorStop(0, 'rgba(255,179,71,0)'); gr.addColorStop(1, 'rgba(255,179,71,.55)');
+      g.strokeStyle = gr; g.lineWidth = 2 * k; g.beginPath();
+      g.moveTo(R.cx + R.ri * Math.cos(a), R.cy + R.ri * Math.sin(a)); g.lineTo(R.cx + (R.ro + 8 * k) * Math.cos(a), R.cy + (R.ro + 8 * k) * Math.sin(a)); g.stroke();
+    }
+    // every moving ball
+    g.globalCompositeOperation = 'lighter';
+    const sp = mach.sprites, s = sp[0].width / 2;
+    for (let j = 0; j < cells.length; j += 2) {
+      const u = cells[j], v = cells[j + 1] + M.lo, a = ang(u), r = rad(v);
+      g.drawImage(sp[dirOf(u, v, o)], R.cx + r * Math.cos(a) - s, R.cy + r * Math.sin(a) - s);
+    }
+    g.globalCompositeOperation = 'source-over';
+    // the frame's progress, as an arc just outside the ring
+    g.strokeStyle = 'rgba(90,209,255,.5)'; g.lineWidth = 3 * k; g.beginPath();
+    g.arc(R.cx, R.cy, R.ro + 7 * k, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * q.ph / P); g.stroke();
+    // key balls entering this frame
+    for (const [name, sym, dx] of [['left', '◀', -14], ['right', '▶', 0], ['reset', '⟲', 14]]) {
+      const lit = clamp(1 - (now - (game.flash[name] || -9)) / .25, 0, 1);
+      g.fillStyle = lit ? `rgba(255,230,140,${.4 + .6 * lit})` : 'rgba(138,149,201,.35)';
+      g.font = `${12 * k}px ui-sans-serif, system-ui, sans-serif`; g.textAlign = 'center';
+      g.fillText(sym, R.cx + (dx + 135) * k, R.cy - R.ro - 20 * k);
+    }
+    const b = mach.batch;
+    $('mstats').innerHTML = `computing frame <b>${b.n + 1}</b> · step <b>${q.ph.toLocaleString()}</b> / ${P.toLocaleString()}` +
+      ` · <b>${cells.length / 2}</b> balls moving · <b>${(P * (game.cur ? game.cur.fps : 0) / 1e6).toFixed(2)}M</b> steps/s`;
+  } else {
+    $('mstats').textContent = live ? 'waiting for the machine…' : 'connecting…';
+  }
+  drawLens(g, now, R, k);
+}
+
+function drawLens(g, now, R, k) {
+  // advance the microscope clip (real consecutive steps), take the newest when it ends
+  let cl = mach.clip;
+  if (cl) cl.k = Math.floor((now - mach.clipT) * CLIP_RATE);
+  if ((!cl || cl.k >= cl.pic.counts.length) && mach.next && (!cl || mach.next.pic !== cl.pic)) {
+    const nx = mach.next, ph0 = nx.pic.ph - nx.pic.counts.length + 1;
+    cl = mach.clip = { pic: nx.pic, n: nx.n, k: 0, ph0, target: lensTarget(nx.pic, ph0) };
+    mach.clipT = now;
+  }
+  if (cl) cl.k = Math.min(cl.k, cl.pic.counts.length - 1);
+  const ctr = mach.ctr = lensCenter(), sc = 2 * R.rl / mach.span, cx = R.cx, cy = R.cy;
+  // marker on the ring + leader to the lens
+  const a = ang(ctr.u), rr = rad(ctr.v), mx = cx + rr * Math.cos(a), my = cy + rr * Math.sin(a);
+  g.strokeStyle = 'rgba(255,255,255,.35)'; g.lineWidth = k;
+  g.beginPath(); g.moveTo(cx + R.rl * Math.cos(a), cy + R.rl * Math.sin(a)); g.lineTo(mx, my); g.stroke();
+  g.beginPath(); g.arc(mx, my, 6 * k, 0, 7); g.stroke();
+  g.save();
+  g.beginPath(); g.arc(cx, cy, R.rl, 0, 7); g.clip();
+  const lg = g.createRadialGradient(cx, cy, 0, cx, cy, R.rl);
+  lg.addColorStop(0, '#0d1330'); lg.addColorStop(1, '#070a18');
+  g.fillStyle = lg; g.fillRect(cx - R.rl, cy - R.rl, 2 * R.rl, 2 * R.rl);
+  const half = mach.span / 2 + 3;
+  // band edges, if in view
+  g.fillStyle = 'rgba(255,70,110,.06)';
+  if (ctr.v - half < M.lo) g.fillRect(cx - R.rl, cy + (ctr.v - M.lo) * sc, 2 * R.rl, R.rl);
+  if (ctr.v + half > M.hi) g.fillRect(cx - R.rl, cy - R.rl, 2 * R.rl, R.rl - (M.hi - ctr.v) * sc);
+  // mirrors: each wall square is a diamond in (u, v)
+  g.fillStyle = '#4f64a8'; g.beginPath();
+  const u0 = ctr.u - half, u1 = ctr.u + half, U2 = M.U2;
+  const segs = u0 < 0 ? [[u0 + U2, U2, -U2], [0, u1, 0]] : u1 > U2 ? [[u0, U2, 0], [0, u1 - U2, U2]] : [[u0, u1, 0]];
+  for (const [lo, hi, shift] of segs) {
+    let i = lowerBound(SQ.u, lo);
+    for (; i < SQ.u.length && SQ.u[i] < hi; i++) {
+      const dv = SQ.v[i] - ctr.v;
+      if (dv < -half || dv > half) continue;
+      const X = cx + (SQ.u[i] + shift - ctr.u) * sc, Y = cy - dv * sc, d = 2 * sc;
+      g.moveTo(X - d, Y); g.lineTo(X, Y - d); g.lineTo(X + d, Y); g.lineTo(X, Y + d); g.closePath();
+    }
+  }
+  g.fill();
+  // balls of the current clip step
+  if (cl) {
+    const cells = decode(cl.pic)[cl.k], o = (cl.pic.ph - cl.pic.counts.length + 1 + cl.k) & 1;
+    for (let j = 0; j < cells.length; j += 2) {
+      const u = cells[j], v = cells[j + 1] + M.lo, du = wrapU(u - ctr.u), dv = v - ctr.v;
+      if (Math.abs(du) > half || Math.abs(dv) > half) continue;
+      const X = cx + du * sc, Y = cy - dv * sc, col = COLORS[dirOf(u, v, o)];
+      g.save(); g.shadowColor = col; g.shadowBlur = 10 * k; g.fillStyle = col;
+      g.beginPath(); g.arc(X, Y, Math.max(1.5 * k, .95 * sc), 0, 7); g.fill(); g.restore();
+      g.fillStyle = 'rgba(255,255,255,.75)';
+      g.beginPath(); g.arc(X - .3 * sc, Y - .3 * sc, Math.max(.6 * k, .3 * sc), 0, 7); g.fill();
+    }
+  }
+  g.restore();
+  g.strokeStyle = '#3a4a8e'; g.lineWidth = 2 * k; g.beginPath(); g.arc(cx, cy, R.rl, 0, 7); g.stroke();
+  g.fillStyle = '#8a95c9'; g.textAlign = 'center'; g.font = `${11 * k}px ui-sans-serif, system-ui, sans-serif`;
+  const label = cl ? `microscope · frame ${cl.n + 1}, step ${(cl.pic.ph - cl.pic.counts.length + 1 + cl.k).toLocaleString()} · ${cl.pic.counts.length} real steps per clip`
+                   : 'microscope';
+  g.fillText(label, cx, cy + R.rl - 14 * k);
+  g.fillStyle = '#5d6790';
+  g.fillText(mach.follow ? 'click the ring to choose a depth · wheel to zoom' : 'click the ring to move · wheel to zoom', cx, cy - R.rl + 22 * k);
+}
+
+function lowerBound(arr, x) {
+  let a = 0, b = arr.length;
+  while (a < b) { const m = (a + b) >> 1; if (arr[m] < x) a = m + 1; else b = m; }
+  return a;
+}
+
+// ---------------------------------------------------------------- main loop
+let lastT = performance.now() / 1000;
+function draw() {
+  const now = performance.now() / 1000, dt = Math.min(.1, now - lastT);
+  lastT = now;
+  drawGame(now, dt);
+  drawMachine(now);
+  const ov = $('overlay');
+  ov.style.display = fault ? 'flex' : 'none';
+  if (fault) ov.textContent = 'The machine stopped: ' + fault;
+  requestAnimationFrame(draw);
+}
+
+init().catch(e => { fault = String(e); const ov = $('overlay'); ov.style.display = 'flex'; ov.textContent = fault; });
+</script>
+</body>
+</html>

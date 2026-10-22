@@ -116,3 +116,17 @@ page faults on the private bitmaps; they are now touched at allocation.
 Tried, no measurable gain: per-tile hash sets instead of private bitmaps, and
 prefetching wall rows ahead of the lanes. Best setting measured: 16 threads,
 epoch 32 (24 and 32 threads were not faster on the shared machine).
+
+## 2026-10-21 — browser frontend: stdlib server, server-sent events, ring view
+web.py (http.server + threads) runs the machine like play.py and streams
+JSON over server-sent events, with keys sent back as POSTs. This avoids a
+hand-written WebSocket, and the stdlib has no WebSocket server. The page is
+one HTML file with canvas drawing and no libraries. The world is drawn as a
+ring because it is a loop (an unrolled strip is 8:1 and would not fit half a
+window). A frame is 43k steps in ~1/20 s, so the machine view is
+stroboscopic: PICS=3 real pictures per frame at phases that advance a little
+each frame (a sweep every 8 s by default). The microscope shows 16-step clips
+recorded by world_run_trace (the K steps before a picture run serially and
+are recorded; the rest of the frame still runs on the tile threads). Walls
+are sent once as sorted, delta-coded 2x2 squares: 41 KB gzipped instead of
+1.1 MB. One shared game per server, and the machine pauses with no viewers.
