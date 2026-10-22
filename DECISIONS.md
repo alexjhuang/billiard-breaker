@@ -52,3 +52,10 @@ are bounced up and out the top by the splitter. State returns along the
 bottom (below every U-turn, so no vertical traffic crosses it). Every
 perpendicular crossing must have a safe g; the layouter checks all of them.
 
+
+## 2026-10-21 — netlist from a Python DSL, not Verilog/Yosys
+Yosys isn't installable (see first entry). hw/logic.py is a tiny boolean DAG
+with constant folding and an ORX ("these are never true together") node,
+lowered by hw/lower.py straight to the switch gate, the only gate the
+billiard world has. Two implementations (oracle.py and hw/game.py) are
+cross-checked bit-exactly, which is what the Verilog was for.

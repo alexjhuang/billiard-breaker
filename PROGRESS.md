@@ -12,7 +12,9 @@ Source of truth between sessions. Trust `python3 tests/run_all.py` over this fil
       set-based reference, reversible, conserving, dimer mirrors all 8 cases, head-on
       gate). Speed: ~1.4 Gcell-steps/s (2000x2000: 2.95 ms/step).
 - [ ] M3 tiles
-- [ ] M4 netlist
+- [x] M4 netlist — hw/logic.py DAG, hw/game.py (frame step as logic), hw/lower.py ->
+      switch ops, netsim.py. Both DAG eval and gate-level netsim == oracle on random
+      states (tests/test_netlist.py). Stats: 740 gates, 298 power, peak 105 live, ORX up to 32.
 - [ ] M5 layouter on small circuits
 - [ ] M6 full game layout
 - [ ] M7 playable
@@ -30,7 +32,12 @@ Slot recipe (rows relative to resting row rho; every lane leaves at rho-32):
   A retime 12 dline -6, B retime 18. Lane pitch 40 (x-y units).
   Lesson: a 32-delay bump's top bar sits ~2 columns left of its u; keep
   vertical traffic >=4 columns away from bump zones.
-Next: M4 netlist DSL (hw/) + lowering to slot ops + netsim, then M5 planner.
+Next: M5 planner. Key constraint found while designing it: a messenger only
+falls, so every op's data lane must sit *below* all its control lanes; values
+therefore drift down the band during a frame, and next-state lanes must be
+lifted back up to the state lines at frame end ("lift" = up-jog + down-jog,
++40n line for 32m delay with 16m - 20n >= 5; the lane then skips m-1 idle
+bumps). Upward messengers don't work: their timing depends on distance.
 
 ## Verified formulas (sim-checked 2026-10-21; being moved into physics.py + tests)
 Ball = (dir, s, p, q): lead at (p + dx*t, q + dy*t), trailer s cells behind.
