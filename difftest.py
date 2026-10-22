@@ -1,8 +1,10 @@
 """Differential test: the billiard-ball machine vs oracle.py over many frames.
 
-Usage: python3 difftest.py FRAMES SEQUENCES [first_seed]
-Each sequence starts from the initial state with random inputs (a reset now
-and then). Sequences run in parallel, one process each.
+Usage: python3 difftest.py FRAMES SEQUENCES [first_seed] [--python]
+Each sequence starts from the initial state. Even seeds use random keys;
+odd seeds use a noisy paddle-tracking bot (so bricks get cleared and games
+get won), both with an occasional reset. Sequences run in parallel, one
+process each, in the C simulator (or cyl.py with --python).
 """
 import multiprocessing as mp
 import random
@@ -23,20 +25,34 @@ def bits_to_state(bits):
 
 
 def inputs_for(seed, n):
+    """Per-frame inputs, decided from the oracle's state (the machine must agree)."""
     rng = random.Random(seed)
-    return [dict(left=int(rng.random() < .35), right=int(rng.random() < .35), reset=int(rng.random() < .01))
-            for _ in range(n)]
+    st, out = oracle.INIT, []
+    for _ in range(n):
+        if seed % 2 and rng.random() < .9:
+            c = st.px + 3
+            inp = dict(left=int(st.bx < c - 1), right=int(st.bx > c), reset=0)
+        else:
+            inp = dict(left=int(rng.random() < .35), right=int(rng.random() < .35), reset=0)
+        inp['reset'] = int(rng.random() < .005 or (oracle.win(st) or oracle.lose(st)) and rng.random() < .1)
+        out.append(inp)
+        st = oracle.step(st, inp['left'], inp['right'], inp['reset'])
+    return out
 
 
 def run(args):
-    seed, nframes = args
+    seed, nframes, python = args
     m = game_machine.load()
     ins = inputs_for(seed, nframes)
     env = game.env_of(oracle.INIT, 0, 0, 0)
     init = {k: v for k, v in env.items() if k not in EXT}
     t = time.time()
-    got = m.simulate(init, ins, nframes)
-    st = oracle.INIT
+    if python:
+        got = m.simulate(init, ins, nframes)
+    else:
+        import fastsim
+        got = fastsim.simulate(m, init, ins, nframes)
+    st, wins, bricks_hit = oracle.INIT, 0, 0
     for n in range(nframes + 1):
         mine = bits_to_state({k: v for k, v in got[n].items() if k not in ('win', 'lose')})
         if mine != st:
@@ -48,16 +64,20 @@ def run(args):
             break
         prev = st
         st = oracle.step(st, ins[n]['left'], ins[n]['right'], ins[n]['reset'])
-    return seed, 'ok', time.time() - t
+        wins += oracle.win(st) and not oracle.win(prev)
+        bricks_hit += bin(prev.bricks).count('1') - bin(st.bricks).count('1') if not ins[n]['reset'] else 0
+    return seed, f'ok ({wins} wins, {bricks_hit} bricks broken)', time.time() - t
 
 
 if __name__ == '__main__':
-    frames, seqs = int(sys.argv[1]), int(sys.argv[2])
-    first = int(sys.argv[3]) if len(sys.argv) > 3 else 0
+    args = [a for a in sys.argv[1:] if not a.startswith('--')]
+    python = '--python' in sys.argv
+    frames, seqs = int(args[0]), int(args[1])
+    first = int(args[2]) if len(args) > 2 else 0
     game_machine.load()
     with mp.Pool(min(seqs, mp.cpu_count())) as p:
-        res = p.map(run, [(s, frames) for s in range(first, first + seqs)])
-    bad = [r for r in res if r[1] != 'ok']
+        res = p.map(run, [(s, frames, python) for s in range(first, first + seqs)])
+    bad = [r for r in res if not r[1].startswith('ok')]
     for r in res:
         print(f'seed {r[0]}: {r[1]} ({r[2]:.0f}s, {r[2] / frames:.1f}s/frame)')
     print(f'{len(res) - len(bad)}/{len(res)} sequences matched the oracle for {frames} frames')

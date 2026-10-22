@@ -35,3 +35,13 @@ def load(rebuild=False):
     with open(CACHE, 'wb') as f:
         pickle.dump(m, f, protocol=pickle.HIGHEST_PROTOCOL)
     return m
+
+
+if __name__ == '__main__':
+    import time
+    import hardware
+    t = time.time()
+    m = load(rebuild=True)
+    hardware.export(m)
+    print(f'built in {time.time() - t:.1f}s: {len(m.plan.slots)} slots, U={m.U}, P={m.P}, '
+          f'{len(m.L.bars)} bars, {len(m.L.feeds)} balls per frame -> {hardware.PATH}')

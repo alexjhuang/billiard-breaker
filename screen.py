@@ -44,12 +44,6 @@ def _loop(scr, stepper, fps):
     deadline = t0 = time.monotonic()
     n = 0
     while True:
-        keys = set()
-        while (k := scr.getch()) != -1:
-            keys.add(k)
-        if ord('q') in keys:
-            return
-        frame = stepper(bool(keys & left_keys), bool(keys & right_keys), ord('r') in keys)
         n += 1
         scr.erase()
         try:
@@ -61,3 +55,9 @@ def _loop(scr, stepper, fps):
         scr.refresh()
         deadline += 1 / fps
         time.sleep(max(0.0, deadline - time.monotonic()))
+        keys = set()
+        while (k := scr.getch()) != -1:
+            keys.add(k)
+        if ord('q') in keys:
+            return
+        frame = stepper(bool(keys & left_keys), bool(keys & right_keys), ord('r') in keys)

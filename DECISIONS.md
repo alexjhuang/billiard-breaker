@@ -59,3 +59,18 @@ with constant folding and an ORX ("these are never true together") node,
 lowered by hw/lower.py straight to the switch gate, the only gate the
 billiard world has. Two implementations (oracle.py and hw/game.py) are
 cross-checked bit-exactly, which is what the Verilog was for.
+
+## 2026-10-21 — C simulator via gcc + ctypes
+Python simulates a game frame in ~36 s; 1000x20 frames would take days.
+csim/bbm.c is the same Margolus rule on the same diagonal cylinder (bitmaps
+for walls and moving particles; only moving particles are visited each step),
+built with the system gcc on first use and loaded with stdlib ctypes. No new
+package dependency. Tested against cyl.py on random dense patterns and whole
+machines (tests/test_fastsim.py). ~0.5 s per game frame.
+
+## 2026-10-21 — frontend loads plain hardware data
+play.py never sees the netlist: game_machine.py exports build/hardware.pkl
+(wall cells, the per-frame ball schedule, readout cells). play.py starts from
+an empty world and holds reset for the first frame, so the circuit itself
+sets up the game. tests/test_play.py checks the import closure has no logic
+modules and that play.py's frames match the oracle.
