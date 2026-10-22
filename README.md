@@ -1,5 +1,8 @@
 # Brick Breaker on a Billiard Ball Computer
 
+**Play it in your browser: https://alexjhuang.github.io/billiard-breaker/** (the
+machine runs on your computer, ~5–10 frames/s; `python3 web.py` locally is faster).
+
 A playable brick-breaker game whose entire game logic is computed by billiard
 balls: a Margolus billiard-ball-model cellular automaton (BBMCA). The frontend
 only adds balls at input ports (your keys, plus a fixed schedule of "power"
@@ -62,8 +65,13 @@ in the visitor's browser, in a Web Worker on one core: 6.7 frames/s under Node
 on this machine and ~5 in headless Chromium here. A laptop core should do
 somewhat better. tests/test_engine.py checks the JS engine against the C
 simulator (states, flags and every recorded ball), and a 1000-frame run
-matched the oracle. To publish: `python3 web.py --export site`, then push
-`site/` to the `gh-pages` branch.
+matched the oracle. Published at https://alexjhuang.github.io/billiard-breaker/
+from the `gh-pages` branch. To update it:
+
+```
+python3 web.py --export /tmp/site && cd /tmp/site && git init -q -b gh-pages && git add -A \
+  && git commit -qm "site" && git push -f git@github.com:alexjhuang/billiard-breaker.git gh-pages
+```
 
 ## How it works
 

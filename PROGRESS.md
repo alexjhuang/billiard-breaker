@@ -35,6 +35,10 @@ Source of truth between sessions. Trust `python3 tests/run_all.py` over this fil
 - [x] M9 finish — README.md with measured numbers, layout images, final report.
 
 ## Current
+Static site live (2026-10-22): https://alexjhuang.github.io/billiard-breaker/ (gh-pages,
+built by `web.py --export`; JS engine in the browser, ~4.7 frames/s in headless
+Chromium here). Next for it: threads in the browser (SharedArrayBuffer via a
+service worker for cross-origin isolation).
 Browser frontend done (2026-10-21): `python3 web.py`, see README "In a browser";
 tests/test_web.py (frames == oracle, pictures == a replay of the machine).
 All milestones done (2026-10-21); README.md has the final report. Next ideas:
