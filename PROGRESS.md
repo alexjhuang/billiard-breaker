@@ -18,11 +18,14 @@ Source of truth between sessions. Trust `python3 tests/run_all.py` over this fil
 - [x] M5 layouter on small circuits — plan.py (slots, lines, copies, lifts),
       compile.py (bars + feeds, frame runner), debug.py (first wrong lane per slot).
       2-bit counter (12 frames) and 4-bit accumulator (20 frames): CA == netsim.
-- [~] M6 full game layout — game_machine.py compiles in ~1s: 1136 slots, U=45956,
-      P=82308, 326k bars, 1355 feeds/frame. 100 random states x 1 frame: every lane
-      correct at every slot (debug.first_fault). difftest.py 5 frames x 4 seqs: all
-      match oracle (state + win/lose), 36 s/frame in Python. 1000x20 needs the C sim.
-- [ ] M7 playable
+- [x] M6 full game layout — game_machine.py compiles in ~2s: 1136 slots, U=45956,
+      P=82308, 326k bars, 1355 feeds/frame. `python3 difftest.py 1000 20`: 20/20
+      sequences bit-exact vs oracle for 1000 frames (state + win/lose; log in
+      build/difftest_1000x20.log, 0.5 s/frame in C). Those runs never reach a win
+      (random resets); seeds >= 1000 (pure bot) cover the win path: running.
+- [x] M7 playable — play.py (curses) drives the C sim from build/hardware.pkl;
+      tests/test_play.py: no logic modules imported, frames == oracle, pty smoke run.
+      ~2.8 fps measured (with background load).
 - [ ] M8 performance
 - [ ] M9 finish
 

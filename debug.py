@@ -67,3 +67,47 @@ def first_fault(m, state, inputs, frame_inputs=None):
         if w.broken:
             return dict(broken=True, t=w.t)
     return None
+
+
+def first_fault_fast(m, state, inputs):
+    """Same report as first_fault, using the C simulator (one frame)."""
+    from fastsim import FastCyl
+    plan, L = m.plan, m.L
+    val = plan_values(plan, {**state, **inputs})
+    w = FastCyl(m.U, m.lo, m.hi)
+    w.add([c for b in L.bars for c in b.cells()], wall=True)
+    feeds = []
+    for t, b, tag in L.feeds:
+        if tag.startswith('input:') and not inputs.get(tag[6:]):
+            continue
+        feeds += [(t, x, y) for x, y in b.cells(t)]
+    look = m.readout_balls()
+    for name, bit in state.items():
+        if bit:
+            lane = look[name]
+            t = -(lane.p - lane.q) // 2
+            feeds += [(t, x, y) for x, y in lane.cells(t)]
+    reads, keys = [], []
+    for j, slot in enumerate(plan.slots):
+        u0, r = m.u0[j], m.rows(j)
+        for s, (line, debt) in slot.live.items():
+            lane = m.lane(line, r - 32 * debt)
+            t = u0 - (lane.p + lane.q) // 2
+            for x, y in lane.cells(t):
+                reads.append((t, x, y))
+                keys.append((j, s, line))
+    feeds.sort()
+    order = sorted(range(len(reads)), key=lambda k: reads[k])
+    w.t = min(feeds[0][0], reads[order[0]][0])
+    bits = w.run(reads[order[-1]][0] + 1, feeds, [reads[k] for k in order])
+    got = {}
+    for k, bit in zip(order, bits):
+        got[keys[k]] = got.get(keys[k], 0) + bit
+    for (j, s, line), k in sorted(got.items()):
+        want = val.get(s, 0)
+        if k != 2 * want:
+            return dict(slot=j, kind=plan.slots[j].kind, sig=s, line=line, want=want, got=k,
+                        op=plan.slots[j].op, prev=plan.slots[j - 1] if j else None)
+    if w.broken:
+        return dict(broken=True)
+    return None

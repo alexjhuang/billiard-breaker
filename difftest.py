@@ -2,8 +2,8 @@
 
 Usage: python3 difftest.py FRAMES SEQUENCES [first_seed] [--python]
 Each sequence starts from the initial state. Even seeds use random keys;
-odd seeds use a noisy paddle-tracking bot (so bricks get cleared and games
-get won), both with an occasional reset. Sequences run in parallel, one
+odd seeds a noisy paddle-tracking bot, both with occasional resets. Seeds
+>= 1000 use the bot with no random resets, so games run to a win. Sequences run in parallel, one
 process each, in the C simulator (or cyl.py with --python).
 """
 import multiprocessing as mp
@@ -28,6 +28,14 @@ def inputs_for(seed, n):
     """Per-frame inputs, decided from the oracle's state (the machine must agree)."""
     rng = random.Random(seed)
     st, out = oracle.INIT, []
+    if seed >= 1000:  # pure bot, no random resets: plays games to the end (covers win)
+        for _ in range(n):
+            c = st.px + 3
+            inp = dict(left=int(st.bx < c - 1), right=int(st.bx > c),
+                       reset=int((oracle.win(st) or oracle.lose(st)) and rng.random() < .05))
+            out.append(inp)
+            st = oracle.step(st, inp['left'], inp['right'], inp['reset'])
+        return out
     for _ in range(n):
         if seed % 2 and rng.random() < .9:
             c = st.px + 3
