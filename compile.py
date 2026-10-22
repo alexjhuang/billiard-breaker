@@ -5,7 +5,7 @@ resting row r = R0 - 32*slot; every lane leaves a slot at r - 32):
   op slot:   u0+1 power column (power data lands at row r-14)
              u0+8 zone A: controls retime 12, data retime 14, idle lanes 32
              x+y = 2(u0+18)+1 messenger column, row r-12
-             u0+22 splitter (and landing of a kept B)
+             u0+24 splitter (and landing of a kept B, 1.5 columns left)
              u0+27 zone D: control retime 14/-6, A 12/-6, B 18 (14 if landed)
              u0+37 drops (controls at their last use, leftovers)
   lift slot: u0+4 down-moves (retime 32), u0+16 idle bumps, u0+28 up-moves
@@ -25,7 +25,7 @@ class Machine:
         nslots = len(plan.slots)
         self.u0 = [0]
         for slot in plan.slots:  # each extra drop needs its own column
-            self.u0.append(self.u0[-1] + w + 3 * max(0, len(self.drop_list(slot)) - 1))
+            self.u0.append(self.u0[-1] + w + 4 * max(0, len(self.drop_list(slot)) - 1))
         self.U = self.u0[-1]
         self.P = self.U + 32 * nslots
         nlines = max(l for s in plan.slots for l, _ in s.live.values()) + 2
@@ -48,7 +48,7 @@ class Machine:
         return sorted(lines, reverse=True)
 
     def drop_u(self, j, slot, line):
-        return self.u0[j] + 37 + 3 * self.drop_list(slot).index(line)
+        return self.u0[j] + 37 + 4 * self.drop_list(slot).index(line)
 
     def line_c(self, line):
         return self.C0 - PITCH * line
@@ -105,7 +105,7 @@ class Machine:
         shifted = {c: interaction(ctrl_lanes[c], Q)[1] for c in ctrl_lanes}
         Q2 = Q._replace(q=Q.q - 2)
         A = interaction(R, Q2)[1]
-        uS = u0 + 22
+        uS = u0 + 24
         if op.keep == 'AB':
             bar = L.split(R, uS, 'A')                # B goes down ...
             B = self.land(R, bar, slot.land[1])      # ... and lands on its own line

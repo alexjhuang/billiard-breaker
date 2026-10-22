@@ -49,3 +49,14 @@ def test_four_bit_accumulator():
     m, dt = run_vs_netsim(outs, {f'a{i}': f"a{i}'" for i in range(4)}, [f'i{i}' for i in range(4)],
                           ['cout'], 20, 2)
     print(f'    {len(m.plan.slots)} slots, P={m.P}, {len(m.L.bars)} bars, {dt / 20:.1f}s/frame')
+
+
+def test_keep_both_outputs():
+    """An op whose A and B outputs are both used (B lands on its own line)."""
+    from hw.logic import NOT
+    a, b, c = var('a'), var('b'), var('c')
+    outs = {"a'": AND(a, b), "b'": AND(a, NOT(b)), "c'": XOR(c, b)}
+    assert any(op.keep == 'AB' for op in lower(outs).ops)
+    for x in range(8):
+        run_vs_netsim(outs, {'a': "a'", 'b': "b'", 'c': "c'"}, [], [], 3, x,
+                      init={'a': x >> 2 & 1, 'b': x >> 1 & 1, 'c': x & 1})

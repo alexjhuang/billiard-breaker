@@ -18,7 +18,10 @@ Source of truth between sessions. Trust `python3 tests/run_all.py` over this fil
 - [x] M5 layouter on small circuits — plan.py (slots, lines, copies, lifts),
       compile.py (bars + feeds, frame runner), debug.py (first wrong lane per slot).
       2-bit counter (12 frames) and 4-bit accumulator (20 frames): CA == netsim.
-- [ ] M6 full game layout
+- [~] M6 full game layout — game_machine.py compiles in ~1s: 1136 slots, U=45956,
+      P=82308, 326k bars, 1355 feeds/frame. 100 random states x 1 frame: every lane
+      correct at every slot (debug.first_fault). difftest.py 5 frames x 4 seqs: all
+      match oracle (state + win/lose), 36 s/frame in Python. 1000x20 needs the C sim.
 - [ ] M7 playable
 - [ ] M8 performance
 - [ ] M9 finish
@@ -34,7 +37,9 @@ Slot recipe (rows relative to resting row rho; every lane leaves at rho-32):
   A retime 12 dline -6, B retime 18. Lane pitch 40 (x-y units).
   Lesson: a 32-delay bump's top bar sits ~2 columns left of its u; keep
   vertical traffic >=4 columns away from bump zones.
-Next: M6 full game. Game plan today: 1136 slots, 189 lines, P ~ 80k steps;
+Next: C simulator (M8 pulled forward) so difftest.py 1000 20 is feasible,
+then M7 play.py. Bug found in M6 (fixed): a kept B's landing bar sat in the
+messenger column (splitter moved to u0+24). Old notes: Game plan today: 1136 slots, 189 lines, P ~ 80k steps;
 python sparse sim ~0.4 s/frame for an 86-slot circuit, so the game needs the
 C simulator (M8) before 1000-frame tests are practical; start M6 with
 debug.first_fault on single frames. Bugs found in M5 (fixed): all ext inputs
