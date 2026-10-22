@@ -59,28 +59,31 @@ def build():
 
     lose = eq(lives, 0)
     win = all_of(NOT(b) for b in bricks)
-    frozen = OR(lose, win)
+    run = NOT(OR(lose, win))  # frozen games change nothing: every cause of change is gated by run
 
-    mv_left = AND(AND(left, NOT(right)), NOT(eq(px, 0)))
-    mv_right = AND(AND(right, NOT(left)), NOT(eq(px, 26)))
+    mv_left = AND(AND(AND(left, NOT(right)), NOT(eq(px, 0))), run)
+    mv_right = AND(AND(AND(right, NOT(left)), NOT(eq(px, 26))), run)
     px1 = step_by_one(px, mv_left, mv_right)
 
-    dx1 = XOR(dx, ORX(AND(NOT(dx), eq(bx, 31)), AND(dx, eq(bx, 0))))
-    bx1 = step_by_one(bx, dx1, NOT(dx1))
+    flip_x = AND(ORX(AND(NOT(dx), eq(bx, 31)), AND(dx, eq(bx, 0))), run)
+    dx1 = XOR(dx, flip_x)
+    bx1 = step_by_one(bx, AND(dx1, run), AND(NOT(dx1), run))
 
     d, borrow = sub(bx1, px)
     paddle_ok = AND(NOT(borrow), AND(AND(NOT(d[4]), NOT(d[3])), NOT(AND(d[2], d[1]))))
     ceiling = AND(dy, eq(by, 0))
     paddle = AND(AND(NOT(dy), eq(by, 29)), paddle_ok)
-    dy1 = XOR(dy, ORX(ceiling, paddle))
-    lost = AND(NOT(dy1), eq(by, 31))
-    by1 = step_by_one(by, dy1, NOT(dy1))
+    dy1 = XOR(dy, AND(ORX(ceiling, paddle), run))
+    lost = AND(AND(NOT(dy1), eq(by, 31)), run)
+    by1 = step_by_one(by, AND(dy1, run), AND(NOT(dy1), run))
 
-    in_rows = AND(NOT(by1[4]), by1[3])
+    # one-hot brick decode as a switch tree: each split is one keep-both gate
+    tree = [AND(AND(NOT(by1[4]), by1[3]), run)]
+    for b in (by1[2], by1[1], bx1[4], bx1[3], bx1[2]):  # brick index bits, high first
+        tree = [t for x in tree for t in (AND(x, NOT(b)), AND(x, b))]
     hits, bricks1 = [], []
     for i, b in enumerate(bricks):
-        r, c = i >> 3, i & 7
-        h = AND(in_rows, AND(eq(by1[1:3], r), eq(bx1[2:5], c)))
+        h = tree[i]
         hits.append(AND(b, h))
         bricks1.append(AND(b, NOT(h)))
     dy2 = XOR(dy1, ORX(*hits))
@@ -89,10 +92,9 @@ def build():
     normal = dict(bx=bx1, by=by1, dx=[dx1], dy=[dy2], px=px1, bricks=bricks1, lives=lives1)
     out = {}
     for name, w in FIELDS:
-        cur, new = S[name], normal[name]
+        new = normal[name]
         if name in BALL0:
             new = [MUX(lost, k, n) for k, n in zip(const(BALL0[name], w), new)]
-        new = [MUX(frozen, c, n) for c, n in zip(cur, new)]
         new = [MUX(reset, k, n) for k, n in zip(const(INIT[name], w), new)]
         for i, e in enumerate(new):
             out[f"{'brick' if name == 'bricks' else name}{i}'"] = e
