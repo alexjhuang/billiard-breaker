@@ -59,7 +59,7 @@ def run(args):
         got = m.simulate(init, ins, nframes)
     else:
         import fastsim
-        fastsim.FastCyl.threads, fastsim.FastCyl.epoch = threads, 64
+        fastsim.FastCyl.threads, fastsim.FastCyl.epoch = threads, 32
         got = fastsim.simulate(m, init, ins, nframes)
     st, wins, bricks_hit = oracle.INIT, 0, 0
     for n in range(nframes + 1):

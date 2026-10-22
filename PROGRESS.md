@@ -11,7 +11,9 @@ Source of truth between sessions. Trust `python3 tests/run_all.py` over this fil
 - [x] M2 simulator — sim.py big-int Margolus BBM; 15 tests pass (cross-checked vs a
       set-based reference, reversible, conserving, dimer mirrors all 8 cases, head-on
       gate). Speed: ~1.4 Gcell-steps/s (2000x2000: 2.95 ms/step).
-- [ ] M3 tiles
+- [x] M3 tiles — as parametric primitives in layout.py (DECISIONS.md), each tested
+      in the CA; a full gate slot for all inputs, both orientations (tests/test_layout.py).
+      Gallery: docs/slot.png, docs/frame.png.
 - [x] M4 netlist — hw/logic.py DAG, hw/game.py (frame step as logic), hw/lower.py ->
       switch ops, netsim.py. Both DAG eval and gate-level netsim == oracle on random
       states (tests/test_netlist.py). Stats: 740 gates, 298 power, peak 105 live, ORX up to 32.
@@ -27,21 +29,24 @@ Source of truth between sessions. Trust `python3 tests/run_all.py` over this fil
 - [x] M7 playable — play.py (curses) drives the C sim from build/hardware.pkl;
       tests/test_play.py: no logic modules imported, frames == oracle, pty smoke run.
       ~2.8 fps measured (with background load).
-- [ ] M8 performance
-- [ ] M9 finish
+- [x] M8 performance — 488 gates, 627 slots, P=43456, U=25900. play.py (16 tile
+      threads): 15.9-18.2 fps measured (load avg 51-59), 1 thread 6.8 fps.
+      Re-verified after every change (see M8 log).
+- [x] M9 finish — README.md with measured numbers, layout images, final report.
 
 ## Current
-M3 nearly done: physics.py (formulas, tests vs CA), cyl.py (sparse cylinder
-CA), layout.py primitives (retime, power, messenger, split, drop) and a full
-gate slot verified in the CA for all inputs (tests/test_layout.py).
-Slot recipe (rows relative to resting row rho; every lane leaves at rho-32):
-  power R: inject at u0-4 with SE row rho-14 | zone A (u0+3): X retime 12,
-  data R retime 14, idle lanes retime 32 | messenger col x+y=2(u0+13)+1, row
-  rho-12 | split R at u0+17 | zone D (u0+21): X' retime 14 dline -6,
-  A retime 12 dline -6, B retime 18. Lane pitch 40 (x-y units).
-  Lesson: a 32-delay bump's top bar sits ~2 columns left of its u; keep
-  vertical traffic >=4 columns away from bump zones.
+All milestones done (2026-10-21); README.md has the final report. Next ideas:
+README "What I'd do next". Slot geometry is documented in compile.py.
+Lesson kept: a bump's top bar sits ~2 columns left of its u; keep vertical
+traffic >=4 columns away from bump zones.
 M8 log (newest first):
+- C tiles cut by v (across the band) instead of u: critical path 1.32M -> 1.03M
+  particle-steps/frame; private bitmaps pre-touched (warm-up page faults gone).
+  play.py: 16 threads, epoch 32. Verified: tests 37/37, difftest 1000x20
+  (threads 4) and 1500x2 with wins (threads 16, as play.py); logs build/*vcut*.
+- ROW 32 -> 28 (ACT_C 10) and role swap for single-ctrl keep-A ops when the
+  ctrl is used once and data sits above: 627 slots, P=43456; verified
+  difftest 1000x20 and 1500x2 wins (threads 4).
 - C: overlapping-tile threads (world_run_tiles): each epoch of 64 steps the
   particles are split by position into equal-count ranges; each thread runs
   its range plus a 2D+4 ghost margin on a private bitmap and keeps only its

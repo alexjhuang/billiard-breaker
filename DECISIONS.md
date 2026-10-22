@@ -94,3 +94,25 @@ rising ops need their controls level by line, and without a smarter
 register-pressure-aware line allocator the band grew to ~250 lines with
 ~350 levels: no better than the sequential plan once band height (messenger
 lifetimes) is counted. Removed; plan.py + early lifts got most of the gain.
+
+## 2026-10-21 — "tiles" are parametric layout primitives, not fixed bit patterns
+GOAL.md M3 asks for tiles.py with fixed bit-pattern tiles. Every placement
+here depends on the lane's line and row (bar positions shift with them), so
+fixed patterns would mean one tile per (line, row) pair. Instead layout.py has
+parametric primitives (bar, turn, jog/retime, power, messenger, split, drop)
+built on the verified mirror/collision formulas, each tested in the CA in
+isolation, and a whole gate slot tested for every input combination and both
+orientations, with no stray balls (tests/test_layout.py). Gallery:
+docs/slot.png (one gate) and docs/frame.png (PNG via zlib, no numpy).
+
+## 2026-10-21 — C tiles cut across the band (v), not along the loop (u)
+Measured with deterministic counters (particle-steps per frame, and the sum
+over epochs of the busiest tile's work, i.e. the critical path), 16 threads,
+epoch 32: cutting by u2 gave 15.3M total / 1.32M critical; cutting by v gives
+12.9M / 1.03M. The lanes travel along u together, so equal-count u ranges get
+narrower than their 68-row ghost margins. v doesn't wrap, which also removed
+the ring-distance code. Slow epochs in the first ~8 frames were first-touch
+page faults on the private bitmaps; they are now touched at allocation.
+Tried, no measurable gain: per-tile hash sets instead of private bitmaps, and
+prefetching wall rows ahead of the lanes. Best setting measured: 16 threads,
+epoch 32 (24 and 32 threads were not faster on the shared machine).

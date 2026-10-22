@@ -45,14 +45,14 @@ def test_tiled_threads_match_serial():
 
 
 def test_tiled_threads_match_serial_on_the_game():
-    """The real game hardware for a few frames: 8 threads == 1 thread, cell for cell."""
+    """The real game hardware for a few frames: 16 threads (as in play.py) == 1 thread, cell for cell."""
     import fastsim
     import hardware
     hw = hardware.load()
     keys = [dict(left=0, right=0, reset=1)] + [dict(left=k % 3 == 0, right=k % 2, reset=0) for k in range(4)]
     results = []
-    for threads in (1, 8):
-        fastsim.FastCyl.threads, fastsim.FastCyl.epoch = threads, 64
+    for threads in (1, 16):
+        fastsim.FastCyl.threads, fastsim.FastCyl.epoch = threads, 32
         r = fastsim.Runner(hw)
         for inp in keys:
             r.feed(inp)
