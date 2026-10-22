@@ -49,9 +49,9 @@ class Slot:
 
 
 class Plan2:
-    def __init__(self, net, state, ext=(), extra_out=(), max_ops=6):
+    def __init__(self, net, state, ext=(), extra_out=(), max_ops=6, max_rise=2):
         self.net, self.state, self.ext, self.extra = net, dict(state), list(ext), list(extra_out)
-        self.max_ops = max_ops
+        self.max_ops, self.max_rise = max_ops, max_rise
         self.lanes, self.slots, self.n = {}, [], net.n
         self.outputs = dict(net.outputs)
         self.uses = {}
@@ -79,10 +79,11 @@ class Plan2:
         return l
 
     def nearest_free(self, line, step):
+        """Closest free line in direction step (lines may go negative: above line 0)."""
         i = line + step
-        while i >= 0 and (i in self.held or i in self.reserved):
+        while i in self.held or i in self.reserved:
             i += step
-        return i if i >= 0 else None
+        return i
 
     def idle_slots(self, l, s):
         return [t for t in range(max(l.last + 1, 1), s) if t not in l.bumps]
@@ -108,10 +109,13 @@ class Plan2:
         ctrls = [self.lanes[c] for c in dict.fromkeys(op.ctrls)]
         hi, lo = min(l.line for l in ctrls), max(l.line for l in ctrls)
         data = self.lanes[op.data] if op.data is not None else None
-        if data is not None and hi <= data.line <= lo:  # data among the controls: copy it out
+        single = len(ctrls) == 1  # a rising messenger needs its controls at one virtual level
+        if data is not None and data.line <= lo and (data.line >= hi or hi - data.line > self.max_rise or not single):
+            # data among the controls, or so far above them that a rising messenger
+            # would make it wait a level per line: copy it below the controls instead
             copy = Op((op.data,), None, 'A', self.new_sig(), None)
             self.uses[copy.a] = 1
-            self.do_op(copy)
+            self.do_op(copy, force_line=self.nearest_free(lo, +1))
             op = op._replace(data=copy.a)
             data = self.lanes[op.data]
         if data is not None:
@@ -120,9 +124,11 @@ class Plan2:
             line = force_line
         else:
             line = self.target_line(op)
+            if line is not None and (hi - line > self.max_rise or (line < hi and not single)):
+                line = None  # far above: a rising messenger would drag the controls' timing along
             if line is None:
                 below, above = self.nearest_free(lo, +1), self.nearest_free(hi, -1)
-                line = below if above is None or below - lo <= hi - above else above
+                line = above if single and hi - above <= self.max_rise and hi - above <= below - lo else below
         orient = 'top' if line > lo else 'bot'
         lanes = ctrls + ([data] if data else [])
         lines = {l.sig: l.line for l in lanes}
@@ -220,6 +226,7 @@ class Plan2:
 
     def stats(self):
         return dict(slots=len(self.slots), ops=sum(len(s.ops) for s in self.slots),
-                    levels=self.final_level, lines=1 + max(l.line for l in self.lanes.values()),
+                    levels=self.final_level,
+                    lines=(min(l.line for l in self.lanes.values()), max(l.line for l in self.lanes.values())),
                     bumps=sum(len(l.bumps) for l in self.lanes.values()),
                     max_ops=max(len(s.ops) for s in self.slots), top=sum(o.orient == 'top' for s in self.slots for o in s.ops))

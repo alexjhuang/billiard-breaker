@@ -19,6 +19,7 @@ typedef struct {
     int64_t U2, lo, hi, V2, S, N;  /* N = U2 * S cells */
     uint64_t *wall, *mov;
     int64_t *p, *np;               /* particle cell indices now / next */
+    int32_t *pu, *pv, *nu, *nv;    /* their u2 and (v2 + PAD) */
     int64_t n, cap;
     int64_t t;
     int broken;
@@ -38,15 +39,22 @@ World *world_new(int64_t U, int64_t lo, int64_t hi) {
     w->mov = calloc(words, 8);
     w->cap = 1024;
     w->p = malloc(w->cap * 8); w->np = malloc(w->cap * 8);
+    w->pu = malloc(w->cap * 4); w->pv = malloc(w->cap * 4);
+    w->nu = malloc(w->cap * 4); w->nv = malloc(w->cap * 4);
     return w;
 }
 
-void world_free(World *w) { free(w->wall); free(w->mov); free(w->p); free(w->np); free(w); }
+void world_free(World *w) {
+    free(w->wall); free(w->mov); free(w->p); free(w->np);
+    free(w->pu); free(w->pv); free(w->nu); free(w->nv); free(w);
+}
 
 static void grow(World *w, int64_t need) {
     if (need <= w->cap) return;
     while (w->cap < need) w->cap *= 2;
     w->p = realloc(w->p, w->cap * 8); w->np = realloc(w->np, w->cap * 8);
+    w->pu = realloc(w->pu, w->cap * 4); w->pv = realloc(w->pv, w->cap * 4);
+    w->nu = realloc(w->nu, w->cap * 4); w->nv = realloc(w->nv, w->cap * 4);
 }
 
 static inline int64_t mod(int64_t a, int64_t m) { int64_t r = a % m; return r < 0 ? r + m : r; }
@@ -71,35 +79,42 @@ void world_add(World *w, int64_t n, const int64_t *xy, int wall) {
         if (wall) { setb(w->wall, i); continue; }
         if (getb(w->mov, i)) continue;
         setb(w->mov, i);
+        w->pu[w->n] = (int32_t)(i / w->S); w->pv[w->n] = (int32_t)(i % w->S);
         w->p[w->n++] = i;
     }
 }
 
 static void step(World *w) {
     const int o = (int)(w->t & 1);
-    const int64_t S = w->S, DX = S + 1, DY = S - 1, lo = w->lo;
+    const int64_t S = w->S, DX = S + 1, DY = S - 1, N = w->N;
+    const int32_t U2 = (int32_t)w->U2, lo = (int32_t)w->lo;
     uint64_t *mov = w->mov, *wall = w->wall;
     int64_t m = 0;
     grow(w, 4 * w->n + 4);
     int64_t *np = w->np;
+    int32_t *nu = w->nu, *nv = w->nv;
+    static const int32_t DU[4] = {0, 1, 1, 2}, DV[4] = {0, 1, -1, 0};  /* TL TR BL BR from TL */
     for (int64_t k = 0; k < w->n; k++) {
         int64_t i = w->p[k];
         if (!getb(mov, i)) continue;  /* its block was already handled */
-        int64_t u2 = i / S, v = i - u2 * S - PAD + lo;
-        /* x = (u2 + v)/2, y = (u2 - v)/2; corner of this cell in its block */
-        int64_t x = (u2 + v) >> 1, y = (u2 - v) >> 1;
-        int rx = (int)((x - o) & 1), ry = (int)((y - o) & 1);
-        int64_t c0 = wrap(w, i - rx * DX - ry * DY);   /* TL */
-        int64_t ci[4] = {c0, wrap(w, c0 + DX), wrap(w, c0 + DY), wrap(w, c0 + DX + DY)};
+        int32_t u2 = w->pu[k], vv = w->pv[k], v = vv - PAD + lo;
+        int rx = (((u2 + v) >> 1) - o) & 1, ry = (((u2 - v) >> 1) - o) & 1;
+        int me = rx + 2 * ry;
+        int64_t c0 = i - rx * DX - ry * DY;
+        int32_t tu = u2 - DU[me], tv = vv - DV[me];
+        if (c0 < 0) c0 += N;
+        if (tu < 0) tu += U2;
+        int64_t ci[4] = {c0, c0 + DX, c0 + DY, c0 + DX + DY};
+        for (int c = 1; c < 4; c++) if (ci[c] >= N) ci[c] -= N;
         int mv[4], wl[4], f[4], cnt = 0;
         for (int c = 0; c < 4; c++) {
             mv[c] = getb(mov, ci[c]); wl[c] = getb(wall, ci[c]);
             f[c] = mv[c] | wl[c]; cnt += f[c];
         }
-        int me = rx + 2 * ry;
         if (cnt == 1) {  /* lone particle: to the opposite corner */
             clrb(mov, i);
-            np[m++] = ci[3 - me];
+            int c = 3 - me, cu = tu + DU[c];
+            np[m] = ci[c]; nu[m] = cu >= U2 ? cu - U2 : cu; nv[m] = tv + DV[c]; m++;
             continue;
         }
         int g[4];
@@ -111,17 +126,22 @@ static void step(World *w) {
             if (wl[c] && !g[c]) w->broken = 1;
         }
         for (int c = 0; c < 4; c++)
-            if (g[c] && !wl[c]) np[m++] = ci[c];
+            if (g[c] && !wl[c]) {
+                int cu = tu + DU[c];
+                np[m] = ci[c]; nu[m] = cu >= U2 ? cu - U2 : cu; nv[m] = tv + DV[c]; m++;
+            }
     }
-    /* write new positions; drop those in the padding (outside the band) */
-    int64_t kept = 0;
+    int64_t kept = 0;  /* write new positions; drop those in the padding (sinks) */
+    const int32_t vmax = PAD + (int32_t)w->V2;
     for (int64_t k = 0; k < m; k++) {
-        int64_t i = np[k];
-        if (!inside(w, i)) continue;
-        setb(mov, i);
-        np[kept++] = i;
+        if (nv[k] < PAD || nv[k] >= vmax) continue;
+        setb(mov, np[k]);
+        np[kept] = np[k]; nu[kept] = nu[k]; nv[kept] = nv[k]; kept++;
     }
     w->np = w->p; w->p = np;
+    int32_t *t;
+    t = w->pu; w->pu = nu; w->nu = t;
+    t = w->pv; w->pv = nv; w->nv = t;
     w->n = kept;
     w->t++;
 }
@@ -153,7 +173,7 @@ void world_set_time(World *w, int64_t t) { w->t = t; }
 int64_t world_cells(World *w, int64_t *xy, int64_t cap) {
     int64_t n = w->n < cap ? w->n : cap;
     for (int64_t k = 0; k < n; k++) {
-        int64_t i = w->p[k], u2 = i / w->S, v = i - u2 * w->S - PAD + w->lo;
+        int64_t u2 = w->pu[k], v = w->pv[k] - PAD + w->lo;
         xy[2 * k] = (u2 + v) / 2; xy[2 * k + 1] = (u2 - v) / 2;
     }
     return w->n;
