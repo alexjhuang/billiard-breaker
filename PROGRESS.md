@@ -25,6 +25,23 @@ M3 in progress: physics primitives found (see DECISIONS.md "the gate" and
 the switch gate + crossing/mirror/splitter behaviour as tests in tests/, then a
 planning model (uv beams, rows, safe-crossing check) for the layouter.
 
+## Verified formulas (sim-checked 2026-10-21; being moved into physics.py + tests)
+Ball = (dir, s, p, q): lead at (p + dx*t, q + dy*t), trailer s cells behind.
+- Mirror, H-bar rows {Y,Y+1}: from above (dy=+1): q' = 2Y-1-q; from below
+  (dy=-1): q' = 2Y+3-q; dy flips, p' = p - s*dx. V-bar cols {X,X+1}: from left
+  (dx=+1): p' = 2X-1-p; from right: p' = 2X+3-p; dx flips, q' = q - s*dy.
+  (120/120 random cases, s in {2,6}.)
+- Collision of perpendicular A,B sharing velocity component c (sign sig):
+  g = sig*(phase_c(B) - phase_c(A)). g==0: clean, each phase_c -= sig*s_partner.
+  g in {-s_A, s_B-s_A, s_B}: shatter. Else: pass. (298/298, s in {2,4,6,10}.)
+- Bar end (long H-bar, left end xe, SE ball crossing row Y at x_cross):
+  s=2: pass x_cross<=xe-3, shatter xe-1..xe+1, reflect >=xe+3.
+  s=6: shatter xe-1..xe+5, reflect >= xe+7.
+- Up-jog of height h changes a SE lane's row by -2h(+mirror consts); down-jog: 0.
+Plan being designed: diagonal-cylinder world (u periodic, so state lanes just
+wrap around), sparse simulator, resting rows on a 32-lattice, messengers at
+rows = 16 mod 32 so every unintended crossing has |g|>=16.
+
 ## Open problems
 - (solved) head-on gates send pass-through outputs back up input pipes; the
   perpendicular switch gate avoids this.
