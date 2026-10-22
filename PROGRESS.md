@@ -41,7 +41,15 @@ Slot recipe (rows relative to resting row rho; every lane leaves at rho-32):
   A retime 12 dline -6, B retime 18. Lane pitch 40 (x-y units).
   Lesson: a 32-delay bump's top bar sits ~2 columns left of its u; keep
   vertical traffic >=4 columns away from bump zones.
-Now: M8 performance. play.py runs at ~2.8 fps (C sim, 218 moving particles,
+M8 log (newest first):
+- early lifts (next-state lanes lifted as soon as final, in op slots' lift zone):
+  611 slots, P=44812, verified 300x8 + 1500x2 wins; ~6 fps (load avg ~69).
+- logic: freeze folded into controls + switch-tree decoder: 740 -> 488 gates,
+  799 slots, P=57848, 5.4 fps; verified 300x8 + 1500x2 wins.
+- C step: per-particle division removed (~17 ns/particle-step); tiled and
+  u-major bitmaps measured slower for the game; parallel strips: dead end
+  (DECISIONS.md).
+Older: M8 performance. play.py runs at ~2.8 fps (C sim, 218 moving particles,
 ~5 us/step, P=82308). Plan: (1) static checker (layout records ball path
 segments; flag unintended bar hits/crossings) so layout changes can be checked
 without full CA runs; (2) "lazy rows": lanes keep their own row (any value

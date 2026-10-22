@@ -23,9 +23,12 @@ class Machine:
     def __init__(self, plan, w=W):
         self.plan, self.W = plan, w
         nslots = len(plan.slots)
-        self.u0 = [0]
-        for slot in plan.slots:  # each extra drop needs its own column
-            self.u0.append(self.u0[-1] + w + 4 * max(0, len(self.drop_list(slot)) - 1))
+        self.u0, self.uend = [0], []
+        for j, slot in enumerate(plan.slots):  # each extra drop needs its own column; lifts a zone
+            end = self.u0[-1] + w + 4 * max(0, len(self.drop_list(slot)) - 1) \
+                + (10 if slot.kind == 'op' and slot.moves else 0)
+            self.uend.append(end)
+            self.u0.append(end)
         self.U = self.u0[-1]
         self.P = self.U + 32 * nslots
         nlines = max(l for s in plan.slots for l, _ in s.live.values()) + 2
@@ -99,7 +102,7 @@ class Machine:
             R = L.power(u0 + 1, self.line_c(slot.power_line), r - 14)
         else:
             R = L.retime(self.lane(slot.data_line, r), u0 + 8, 14)
-        self.idle_bumps(j, slot, set(op.ctrls) | {op.data}, u0 + 8)
+        self.idle_bumps(j, slot, set(op.ctrls) | {op.data} | set(slot.moves), u0 + 8)
         Q = L.messenger(2 * (u0 + 18) + 1, r - 12)
         # controls are read in order from the top; at most one is present
         shifted = {c: interaction(ctrl_lanes[c], Q)[1] for c in ctrl_lanes}
@@ -123,6 +126,9 @@ class Machine:
                 L.drop(X2, self.drop_u(j, slot, slot.live[c][0]))
             else:
                 L.retime(X2, u0 + 27, 14, -6)
+        uL = self.uend[j] - 8  # lift zone at the end of the slot
+        for s, (a, b, m) in slot.moves.items():
+            L.retime(self.lane(a, r), uL, 32 * m, self.line_c(b) - self.line_c(a))
 
     def land(self, B, bar, line):
         """B (unshifted R track) was turned down by splitter `bar`; catch it on `line`."""

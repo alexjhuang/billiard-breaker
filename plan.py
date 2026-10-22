@@ -83,6 +83,8 @@ class Plan:
             self.emit('input', inputs=inputs, drops=prev_extra if k == 0 else [])
             for nm, (s, line) in inputs.items():
                 self.live[s] = (line, 0)
+        self.target = {net.outputs[o]: self.state_line[i] for i, o in self.state.items()}
+        self.pending_lift = None
         for op in net.ops:
             self.do_op(op)
         self.finish()
@@ -119,13 +121,34 @@ class Plan:
             if self.uses[c] == 0:
                 drops.append(c)
         self.emit('op', op=op, data_line=None if op.data is None else line, power_line=power_line,
-                  out_lines=out, land=land, drops=drops)
+                  out_lines=out, land=land, drops=drops, moves=self.early_lift(op))
         if op.data is not None:
             del self.live[op.data]
         for c in drops:
             del self.live[c]
         for s, l in out.items():
             self.live[s] = (l, 0)
+        for s, (a, b, m) in self.slots[-1].moves.items():
+            self.live[s] = (b, m - 1)
+        for s, (line, debt) in list(self.live.items()):
+            if debt and s not in self.slots[-1].moves:
+                self.live[s] = (line, debt - 1)
+
+    def early_lift(self, op):
+        """Pick one finished next-state lane (no uses left but its output) whose
+        state line is free and lift it in this slot's lift zone, so its delay is
+        paid off while later ops run."""
+        busy = self.occupied()
+        for s, goal in sorted(self.target.items(), key=lambda kv: kv[1]):
+            if s not in self.live or self.uses.get(s) != 1 or s in op.ctrls or s == op.data:
+                continue
+            line, debt = self.live[s]
+            if debt or line == goal or goal in busy:
+                continue
+            if goal > line:
+                continue  # down-moves are free at the end
+            return {s: (line, goal, up_cost(line - goal))}
+        return {}
 
     def finish(self):
         """Move next-state lanes onto their state lines and pay off all debt."""

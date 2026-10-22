@@ -74,3 +74,12 @@ play.py never sees the netlist: game_machine.py exports build/hardware.pkl
 an empty world and holds reset for the first frame, so the circuit itself
 sets up the game. tests/test_play.py checks the import closure has no logic
 modules and that play.py's frames match the oracle.
+
+## 2026-10-21 — dead end: splitting the loop into parallel strips
+Tried a threaded C runner that cuts the loop into strips at empty columns,
+each strip running D steps behind its left neighbour, lanes handed over at the
+cuts and predicted across the wrap seam through an empty zone. It was exact
+(matched the serial simulator on whole game frames) but slower: in this
+design all lanes move through the slots together as one diagonal wavefront,
+so at any moment only ~4 of 31 strips have work, and causality forbids a
+strip from running ahead of the lanes it waits for. Removed.
