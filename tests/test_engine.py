@@ -32,12 +32,13 @@ def test_engine_matches_c_simulator():
     assert len(frames) == 12 and any(f['pics'] for f in frames)
     for f in frames:
         n, start = f['n'], r.done_until
-        got = r.feed(f['inp'], [(start + q['ph'], len(q['counts'])) for q in f['pics']])
+        got = r.feed(f['inp'], [(start + q['ph'], K) for q, K in zip(f['pics'], (16, 1, 1) if n % 3 == 0 else (1, 1, 1) if n % 3 == 1 else (16, 1, 3))])
         bits = r.outputs[n]
         assert decode(bits)._asdict() == f['state'], n
         assert (bits['win'], bits['lose']) == (f['win'], f['lose']), n
-        for q, (T, counts, uv) in zip(f['pics'], got or []):
+        assert len(got) == 3, n
+        for q, K, (T, counts, uv) in zip(f['pics'], (16, 1, 1) if n % 3 == 0 else (1, 1, 1) if n % 3 == 1 else (16, 1, 3), got):
             a = q['cells']  # ((x + y) / 2, x - y - lo) pairs
-            assert counts == q['counts'], (n, q['ph'])
+            assert counts == q['counts'] and len(counts) == K, (n, q['ph'], len(counts), K)
             vs = [v + hw['lo'] for v in a[1::2]]
             assert sorted(zip([2 * h + (v & 1) for h, v in zip(a[0::2], vs)], vs)) == sorted(zip(uv[0::2], uv[1::2])), (n, q['ph'])

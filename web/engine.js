@@ -428,13 +428,13 @@ class Machine {
       let t = end;
       if (fi < nf && this.ft[fi] + start < t) t = this.ft[fi] + start;
       if (ri < nr && this.rt[ri] + start < t) t = this.rt[ri] + start;
-      while (ti < pics.length && pics[ti].ph + start < t) ti++;
-      if (ti < pics.length && pics[ti].ph - pics[ti].K + 1 + start < t) t = Math.max(w.t + 1, pics[ti].ph - pics[ti].K + 1 + start);
+      while (ti < pics.length && pics[ti].ph + start <= w.t) ti++;  // pictures fully recorded
+      if (ti < pics.length) t = Math.min(t, Math.max(w.t + 1, pics[ti].ph - pics[ti].K + 1 + start));  // next step to record
       w.runTo(t);
       if (t === end) break;
       for (; fi < nf && this.ft[fi] + start === t; fi++) if (gate[this.fg[fi]]) w.add(this.fx[fi], this.fy[fi], t);
       for (; ri < nr && this.rt[ri] + start === t; ri++) counts[this.rn[ri]] = (counts[this.rn[ri]] || 0) + w.occupied(this.rx[ri], this.ry[ri], t);
-      for (let j = ti; j < pics.length && pics[j].ph - pics[j].K + start < t; j++) {
+      for (let j = ti; j < pics.length && pics[j].ph - pics[j].K + 1 + start <= t; j++) {  // the pictures that record step t
         const q = pics[j];
         if (t > q.ph + start) continue;
         if (q.off + 2 * w.n > q.raw.length) { const b = new Uint16Array(2 * q.raw.length + 2 * w.n); b.set(q.raw); q.raw = b; }
