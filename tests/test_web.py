@@ -62,7 +62,7 @@ def test_web_serves_the_machine():
     import oracle
     import web
     from state import State
-    srv = web.serve(port=0, threads=4, fps=100)
+    srv = web.serve(port=0, fps=100)
     port = srv.server_address[1]
 
     def req(method, path, body=None):

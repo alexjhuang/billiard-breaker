@@ -26,52 +26,15 @@ def test_machine_matches_python_runner():
     assert simulate(m, init, ins, len(ins)) == m.simulate(init, ins, len(ins))
 
 
-def test_tiled_threads_match_serial():
-    """world_run_tiles (overlapping tiles on threads) must equal the serial run exactly."""
-    import fastsim
-    from tests_support import small_machine
-    m, init, ins = small_machine(5)
-    import hardware, os
-    hw = hardware.export(m, path=os.devnull)
-    results = []
-    for threads, epoch in ((1, 32), (3, 16), (4, 40)):
-        fastsim.FastCyl.threads, fastsim.FastCyl.epoch = threads, epoch
-        r = fastsim.Runner(hw, init)
-        for inp in ins:
-            r.feed(inp)
-        results.append((r.outputs, sorted(r.w.moving)))
-    fastsim.FastCyl.threads, fastsim.FastCyl.epoch = 1, 32
-    assert results[0] == results[1] == results[2]
-
-
-def test_tiled_threads_match_serial_on_the_game():
-    """The real game hardware for a few frames: 16 threads (as in play.py) == 1 thread, cell for cell."""
-    import fastsim
-    import hardware
-    hw = hardware.load()
-    keys = [dict(left=0, right=0, reset=1)] + [dict(left=k % 3 == 0, right=k % 2, reset=0) for k in range(4)]
-    results = []
-    for threads in (1, 16):
-        fastsim.FastCyl.threads, fastsim.FastCyl.epoch = threads, 32
-        r = fastsim.Runner(hw)
-        for inp in keys:
-            r.feed(inp)
-        results.append((r.outputs, sorted(r.w.moving)))
-    fastsim.FastCyl.threads, fastsim.FastCyl.epoch = 1, 32
-    assert results[0] == results[1]
-
-
 def test_traced_runs_are_exact():
-    """Recording K steps before chosen times (the web view) changes nothing, and
-    the recorded cells are the same on 1 and 4 threads."""
+    """Recording K steps before chosen times (the web view) changes nothing."""
     import fastsim
     import hardware
     hw = hardware.load()
     keys = [dict(left=0, right=0, reset=1)] + [dict(left=0, right=k % 2, reset=0) for k in range(2)]
     results = []
-    for threads, traced in ((1, False), (1, True), (4, True)):
+    for traced in (False, True):
         r = fastsim.Runner(hw)
-        r.w.threads = threads
         recs = []
         for inp in keys:
             s = r.done_until
@@ -80,5 +43,5 @@ def test_traced_runs_are_exact():
                 assert len(counts) in (16, 1, 3) and sum(counts) * 2 == len(uv)
                 recs.append((T, counts, sorted(zip(uv[0::2], uv[1::2]))))
         results.append((r.outputs, sorted(r.w.moving), recs))
-    assert results[0][:2] == results[1][:2] == results[2][:2]
-    assert results[1][2] == results[2][2] and len(results[1][2]) == 9
+    assert results[0][:2] == results[1][:2]
+    assert len(results[1][2]) == 9

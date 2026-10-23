@@ -1,154 +1,443 @@
 /* Exact BBMCA on the diagonal cylinder, same rule as cyl.py (which it is
- * tested against).
+ * tested against), simulated event by event: free flight is not stepped.
  *
- * Cells are stored by index i = u2 * S + (v2 + PAD), where u2 = (x + y) mod 2U
- * and v2 = x - y - lo; S = V2 + 2*PAD. The PAD columns on both sides of the
- * band are always empty, so block lookups never need bounds checks; any ball
- * that steps into them is dropped (the sinks). Moving x by one changes the
- * index by S + 1, moving y by one by S - 1. Two bitmaps: static walls and
- * moving particles. Each step visits only the moving particles; a block is
- * processed once (its moving bits are cleared as it is handled) and the new
- * positions are written afterwards. */
+ * A lone particle moves one cell diagonally per step until its 2x2 block
+ * holds something else, so every particle is kept as a straight line: its
+ * position at the time of its last event and its direction. Its next event
+ * is the first step at which its block is not lone:
+ *  - a wall: the three cells in front of it sweep three adjacent rows of a
+ *    bitmap; walls are kept in two orientations (rows of constant x - y for
+ *    the SE/NW movers, rows of constant x + y for NE/SW) so that is a
+ *    word-wise scan;
+ *  - another particle: two particles can only share a block if the
+ *    coordinate their motions keep in common is within 1 (x - t for two
+ *    movers with dx = +1, y - t for dy = +1, x + t, y + t), or x - y (SE vs
+ *    NW) / x + y (NE vs SW) within 2. Particles are indexed by those six
+ *    keys, so the candidates are a few bucket lookups and the meeting step
+ *    is solved in closed form.
+ * Events are popped from a heap, grouped by block, and the Margolus rule is
+ * applied to the block (walls included); the particles involved are then
+ * rescheduled. Anything that steps outside the band is dropped (the sinks).
+ * Reads (is this cell occupied at step t) and feeds (add a particle before
+ * step t) are served after all events before t have run, by extrapolation. */
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
-#include <stdatomic.h>
 
 #define PAD 2
+#define INF INT64_MAX
+#define NKIND 6
+
+static const int DX[4] = {1, -1, 1, -1}, DY[4] = {1, 1, -1, -1};   /* d = rx + 2*ry: SE SW NE NW */
+static const int KIND[4][3] = {{0, 1, 4}, {2, 1, 5}, {0, 3, 5}, {2, 3, 4}};  /* keys each direction is indexed by */
+static const int SLOT[4][NKIND] = {{0, 1, -1, -1, 2, -1}, {-1, 1, 0, -1, -1, 2}, {0, -1, -1, 1, -1, 2}, {-1, -1, 0, 1, 2, -1}};  /* KIND inverted */
 
 typedef struct {
-    int64_t U2, lo, hi, V2, S, N;  /* N = U2 * S cells */
-    uint64_t *wall, *mov;
-    int64_t *p, *np;               /* particle cell indices now / next */
-    int32_t *pu, *pv, *nu, *nv;    /* their u2 and (v2 + PAD) */
-    int64_t n, cap;
+    int64_t U, U2, lo, hi, V2, S, RWU, RWV;
+    uint64_t *wu;   /* walls, rows of constant u2 = x + y: word u2 * RWU + (vv >> 6), bit vv & 63; vv = x - y - lo + PAD */
+    uint64_t *wv;   /* walls, rows of constant vv: word vv * RWV + (u2 >> 6), bit u2 & 63 */
+    /* particles: ids are stable, freed ids are reused */
+    int32_t top, cap, nalive, free_head;
+    int64_t *x, *y, *t0, *ev;
+    int8_t *d, *alive;
+    int32_t *ver, *mark;
+    int32_t *nxt[3], *prv[3], *bk[3];
+    int32_t *head[NKIND]; uint64_t *nbm[NKIND]; int64_t nb[NKIND];   /* bucket heads and a bit per non-empty bucket */
+    /* heap of (time, id, version) */
+    int64_t *ht; int32_t *hid, *hver; int64_t hn, hcap;
+    int32_t *grp; int64_t gcap;
     int64_t t;
     int broken;
-    uint64_t **tile_mov; int ntile_mov;   /* private bitmaps for world_run_tiles, kept */
 } World;
 
-static inline int getb(const uint64_t *b, int64_t i) { return (b[i >> 6] >> (i & 63)) & 1; }
-static inline void setb(uint64_t *b, int64_t i) { b[i >> 6] |= 1ULL << (i & 63); }
-static inline void clrb(uint64_t *b, int64_t i) { b[i >> 6] &= ~(1ULL << (i & 63)); }
-static inline int64_t wrap(World *w, int64_t i) { return i < 0 ? i + w->N : (i >= w->N ? i - w->N : i); }
+static inline int64_t mod(int64_t a, int64_t m) { int64_t r = a % m; return r < 0 ? r + m : r; }
+static inline int64_t wrap(int64_t a, int64_t m) { while (a < 0) a += m; while (a >= m) a -= m; return a; }  /* mod for a near [0, m) */
+static inline int64_t imin(int64_t a, int64_t b) { return a < b ? a : b; }
 
 World *world_new(int64_t U, int64_t lo, int64_t hi) {
     World *w = calloc(1, sizeof(World));
-    w->U2 = 2 * U; w->lo = lo; w->hi = hi; w->V2 = hi - lo + 1;
-    w->S = w->V2 + 2 * PAD; w->N = w->U2 * w->S;
-    int64_t words = (w->N + 63) / 64 + 1;
-    w->wall = calloc(words, 8);
-    w->mov = calloc(words, 8);
-    w->cap = 1024;
-    w->p = malloc(w->cap * 8); w->np = malloc(w->cap * 8);
-    w->pu = malloc(w->cap * 4); w->pv = malloc(w->cap * 4);
-    w->nu = malloc(w->cap * 4); w->nv = malloc(w->cap * 4);
+    w->U = U; w->U2 = 2 * U; w->lo = lo; w->hi = hi; w->V2 = hi - lo + 1;
+    w->S = w->V2 + 2 * PAD;
+    w->RWU = (w->S + 63) / 64 + 1; w->RWV = (w->U2 + 63) / 64 + 1;
+    w->wu = calloc(w->U2 * w->RWU, 8);
+    w->wv = calloc(w->S * w->RWV, 8);
+    w->nb[0] = w->nb[1] = w->nb[2] = w->nb[3] = U / 2 + 1;
+    w->nb[4] = w->V2 / 2 + 3;
+    w->nb[5] = U + 1;
+    for (int k = 0; k < NKIND; k++) {
+        w->head[k] = malloc(w->nb[k] * 4);
+        memset(w->head[k], -1, w->nb[k] * 4);
+        w->nbm[k] = calloc(w->nb[k] / 64 + 1, 8);
+    }
+    w->free_head = -1;
     return w;
 }
 
 void world_free(World *w) {
-    for (int k = 0; k < w->ntile_mov; k++) free(w->tile_mov[k]);
-    free(w->tile_mov);
-    free(w->wall); free(w->mov); free(w->p); free(w->np);
-    free(w->pu); free(w->pv); free(w->nu); free(w->nv); free(w);
+    free(w->wu); free(w->wv);
+    for (int k = 0; k < NKIND; k++) { free(w->head[k]); free(w->nbm[k]); }
+    for (int j = 0; j < 3; j++) { free(w->nxt[j]); free(w->prv[j]); free(w->bk[j]); }
+    free(w->x); free(w->y); free(w->t0); free(w->ev); free(w->d); free(w->alive); free(w->ver); free(w->mark);
+    free(w->ht); free(w->hid); free(w->hver); free(w->grp); free(w);
 }
 
-static void grow(World *w, int64_t need) {
+static void grow(World *w, int32_t need) {
     if (need <= w->cap) return;
-    while (w->cap < need) w->cap *= 2;
-    w->p = realloc(w->p, w->cap * 8); w->np = realloc(w->np, w->cap * 8);
-    w->pu = realloc(w->pu, w->cap * 4); w->pv = realloc(w->pv, w->cap * 4);
-    w->nu = realloc(w->nu, w->cap * 4); w->nv = realloc(w->nv, w->cap * 4);
+    int32_t c = w->cap ? w->cap : 1024;
+    while (c < need) c *= 2;
+    w->x = realloc(w->x, c * 8); w->y = realloc(w->y, c * 8); w->t0 = realloc(w->t0, c * 8); w->ev = realloc(w->ev, c * 8);
+    w->d = realloc(w->d, c); w->alive = realloc(w->alive, c);
+    w->ver = realloc(w->ver, c * 4); w->mark = realloc(w->mark, c * 4);
+    for (int j = 0; j < 3; j++) { w->nxt[j] = realloc(w->nxt[j], c * 4); w->prv[j] = realloc(w->prv[j], c * 4); w->bk[j] = realloc(w->bk[j], c * 4); }
+    memset(w->alive + w->cap, 0, c - w->cap);
+    memset(w->ver + w->cap, 0, (c - w->cap) * 4);
+    memset(w->mark + w->cap, -1, (c - w->cap) * 4);
+    w->cap = c;
 }
 
-static inline int64_t mod(int64_t a, int64_t m) { int64_t r = a % m; return r < 0 ? r + m : r; }
-
-/* (x, y) -> index, or -1 if outside the band */
-static inline int64_t index_of(World *w, int64_t x, int64_t y) {
+/* ------------------------------------------------------------------ walls */
+static inline int is_wall(World *w, int64_t x, int64_t y) {
     int64_t v = x - y;
-    if (v < w->lo || v > w->hi) return -1;
-    return mod(x + y, w->U2) * w->S + (v - w->lo + PAD);
+    if (v < w->lo || v > w->hi) return 0;
+    int64_t u2 = wrap(x + y, w->U2), vv = v - w->lo + PAD;
+    return (w->wu[u2 * w->RWU + (vv >> 6)] >> (vv & 63)) & 1;
 }
 
-static inline int inside(World *w, int64_t i) {
-    int64_t c = i % w->S;
-    return c >= PAD && c < PAD + w->V2;
+static inline int is_wall_v(World *w, int64_t x, int64_t y) {  /* same, from the other bitmap */
+    int64_t v = x - y;
+    if (v < w->lo || v > w->hi) return 0;
+    int64_t u2 = wrap(x + y, w->U2), vv = v - w->lo + PAD;
+    return (w->wv[vv * w->RWV + (u2 >> 6)] >> (u2 & 63)) & 1;
+}
+
+void world_add(World *w, int64_t n, const int64_t *xy, int wall);
+
+/* first set bit at position >= p in r0|r1|r2 (nw words), or -1 */
+static inline int64_t scan_fwd(const uint64_t *r0, const uint64_t *r1, const uint64_t *r2, int64_t p, int64_t nw) {
+    int64_t i = p >> 6;
+    if (i >= nw) return -1;
+    uint64_t m = (r0[i] | r1[i] | r2[i]) & (~0ULL << (p & 63));
+    while (!m) { if (++i >= nw) return -1; m = r0[i] | r1[i] | r2[i]; }
+    return i * 64 + __builtin_ctzll(m);
+}
+
+/* last set bit at position <= p, or -1 */
+static inline int64_t scan_bwd(const uint64_t *r0, const uint64_t *r1, const uint64_t *r2, int64_t p) {
+    if (p < 0) return -1;
+    int64_t i = p >> 6;
+    uint64_t m = (r0[i] | r1[i] | r2[i]) & (~0ULL >> (63 - (p & 63)));
+    while (!m) { if (--i < 0) return -1; m = r0[i] | r1[i] | r2[i]; }
+    return i * 64 + 63 - __builtin_clzll(m);
+}
+
+/* steps until particle i's block first holds a wall, or it steps out of the band */
+static int64_t wall_steps(World *w, int32_t i) {
+    int64_t x = w->x[i], y = w->y[i], u2 = wrap(x + y, w->U2), vv = x - y - w->lo + PAD;
+    int d = w->d[i];
+    if (d == 0 || d == 3) {  /* SE / NW: along a row of constant v, wrapping round the loop */
+        const uint64_t *r0 = w->wv + (vv - 1) * w->RWV, *r1 = r0 + w->RWV, *r2 = r1 + w->RWV;
+        int64_t nw = (w->U2 + 63) / 64, q;
+        if (d == 0) {
+            q = scan_fwd(r0, r1, r2, u2 + 1, nw);
+            if (q >= w->U2) q = -1;
+            if (q < 0) q = scan_fwd(r0, r1, r2, 0, nw);
+            if (q < 0 || q >= w->U2) return INF;
+            return (wrap(q - u2, w->U2) - 1) >> 1;
+        }
+        q = scan_bwd(r0, r1, r2, u2 - 1);
+        if (q < 0) q = scan_bwd(r0, r1, r2, w->U2 - 1);
+        if (q < 0) return INF;
+        return (wrap(u2 - q, w->U2) - 1) >> 1;
+    }
+    int64_t ua = u2 ? u2 - 1 : w->U2 - 1, ub = u2 + 1 == w->U2 ? 0 : u2 + 1;
+    const uint64_t *r0 = w->wu + ua * w->RWU, *r1 = w->wu + u2 * w->RWU, *r2 = w->wu + ub * w->RWU;
+    if (d == 2) {  /* NE: v rises; leaves the band after (hi - v) / 2 steps */
+        int64_t exit = (w->hi - (x - y)) >> 1, q = scan_fwd(r0, r1, r2, vv + 1, w->RWU);
+        return q < 0 ? exit : imin(exit, (q - vv - 1) >> 1);
+    }
+    int64_t exit = ((x - y) - w->lo) >> 1, q = scan_bwd(r0, r1, r2, vv - 1);  /* SW */
+    return q < 0 ? exit : imin(exit, (vv - q - 1) >> 1);
+}
+
+/* ------------------------------------------------------------------ heap */
+static void hpush(World *w, int64_t t, int32_t id) {
+    if (w->hn == w->hcap) {
+        w->hcap = w->hcap ? 2 * w->hcap : 4096;
+        w->ht = realloc(w->ht, w->hcap * 8); w->hid = realloc(w->hid, w->hcap * 4); w->hver = realloc(w->hver, w->hcap * 4);
+    }
+    int64_t k = w->hn++;
+    while (k > 0) {
+        int64_t p = (k - 1) >> 1;
+        if (w->ht[p] <= t) break;
+        w->ht[k] = w->ht[p]; w->hid[k] = w->hid[p]; w->hver[k] = w->hver[p];
+        k = p;
+    }
+    w->ht[k] = t; w->hid[k] = id; w->hver[k] = w->ver[id];
+}
+
+static void hpop(World *w) {
+    int64_t n = --w->hn;
+    if (!n) return;
+    int64_t t = w->ht[n]; int32_t id = w->hid[n], ver = w->hver[n], k = 0;
+    while (1) {
+        int64_t c = 2 * k + 1;
+        if (c >= n) break;
+        if (c + 1 < n && w->ht[c + 1] < w->ht[c]) c++;
+        if (w->ht[c] >= t) break;
+        w->ht[k] = w->ht[c]; w->hid[k] = w->hid[c]; w->hver[k] = w->hver[c];
+        k = c;
+    }
+    w->ht[k] = t; w->hid[k] = id; w->hver[k] = ver;
+}
+
+/* ------------------------------------------------------------------ index */
+/* the three keys of particle i (its position is canonical, so one division does) */
+static void keys_of(World *w, int32_t i, int64_t key[3]) {
+    int64_t x = w->x[i], y = w->y[i], tm = mod(w->t0[i], w->U), U = w->U;
+    for (int j = 0; j < 3; j++) {
+        switch (KIND[w->d[i]][j]) {
+            case 0: key[j] = wrap(x - tm, U); break;
+            case 1: key[j] = wrap(y - tm, U); break;
+            case 2: key[j] = wrap(x + tm, U); break;
+            case 3: key[j] = wrap(y + tm, U); break;
+            case 4: key[j] = x - y - w->lo; break;
+            default: key[j] = wrap(x + y, w->U2);
+        }
+    }
+}
+
+static void index_add(World *w, int32_t i, const int64_t key[3]) {
+    for (int j = 0; j < 3; j++) {
+        int kind = KIND[w->d[i]][j];
+        int32_t b = (int32_t)(key[j] >> 1), h = w->head[kind][b];
+        w->bk[j][i] = b; w->prv[j][i] = -1; w->nxt[j][i] = h;
+        if (h >= 0) w->prv[j][h] = i;
+        w->head[kind][b] = i;
+        w->nbm[kind][b >> 6] |= 1ULL << (b & 63);
+    }
+}
+
+static void index_del(World *w, int32_t i) {
+    for (int j = 0; j < 3; j++) {
+        int kind = KIND[w->d[i]][j];
+        int32_t p = w->prv[j][i], n = w->nxt[j][i], b = w->bk[j][i];
+        if (p >= 0) w->nxt[j][p] = n;
+        else { w->head[kind][b] = n; if (n < 0) w->nbm[kind][b >> 6] &= ~(1ULL << (b & 63)); }
+        if (n >= 0) w->prv[j][n] = p;
+    }
+}
+
+/* ------------------------------------------------------------------ meetings */
+static inline int same_block(int64_t t, int64_t xa, int64_t ya, int64_t xb, int64_t yb) {
+    int64_t o = t & 1;
+    return ((xa - o) >> 1) == ((xb - o) >> 1) && ((ya - o) >> 1) == ((yb - o) >> 1);
+}
+
+/* earliest step >= both particles' times at which i and j share a block
+ * (assuming both fly freely until then), or INF */
+static int64_t meet(World *w, int32_t i, int32_t j) {
+    const int64_t U = w->U;
+    int64_t ti = w->t0[i], tj = w->t0[j], tau = ti > tj ? ti : tj;
+    int di = w->d[i], dj = w->d[j];
+    int64_t xi = w->x[i] + DX[di] * (tau - ti), yi = w->y[i] + DY[di] * (tau - ti);
+    int64_t xj = w->x[j] + DX[dj] * (tau - tj), yj = w->y[j] + DY[dj] * (tau - tj);
+    int64_t Dx = xi - xj, Dy = yi - yj;
+    int vx = DX[di] - DX[dj], vy = DY[di] - DY[dj];
+    int64_t best = INF;
+#define TEST(s, k) do { int64_t _s = (s), _k = (k); if (_s >= 0 && tau + _s < best && \
+        same_block(tau + _s, xi + DX[di] * _s, yi + DY[di] * _s, xj + DX[dj] * _s - _k * U, yj + DY[dj] * _s - _k * U)) best = tau + _s; } while (0)
+    if (vx == 0 && vy == 0) {  /* same direction: fixed offset; a shared block now or at the other parity */
+        int64_t k = 0, r = Dx;
+        while (r > U / 2) { r -= U; k--; }
+        while (r < -U / 2) { r += U; k++; }
+        if (Dx + k * U > 1 || Dx + k * U < -1 || Dy + k * U > 1 || Dy + k * U < -1) return INF;
+        TEST(0, k); TEST(1, k);
+        return best;
+    }
+    if (vx == 0 || vy == 0) {  /* perpendicular: the shared coordinate fixes the wrap, the other the step */
+        int64_t Df = vx == 0 ? Dx : Dy, Dm = vx == 0 ? Dy : Dx;
+        int vm = vx == 0 ? vy : vx;
+        int64_t k = 0, r = Df;
+        while (r > U / 2) { r -= U; k--; }
+        while (r < -U / 2) { r += U; k++; }
+        if (Df + k * U > 1 || Df + k * U < -1) return INF;
+        for (int wv = -1; wv <= 1; wv++) {
+            int64_t num = wv - Dm - k * U;
+            if (num % vm) continue;
+            TEST(num / vm, k);
+        }
+        return best;
+    }
+    /* head on (SE vs NW, NE vs SW): the earliest lap at which x lines up, then y must too */
+    for (int wx = -1; wx <= 1; wx++) {
+        int64_t num = wx - Dx;
+        if (num & 1) continue;
+        int64_t k = 0, r = num;  /* k with num - kU in [0, U) (vx > 0) or (-U, 0] (vx < 0): the first lap */
+        if (vx > 0) { while (r < 0) { r += U; k--; } while (r >= U) { r -= U; k++; } }
+        else { while (r > 0) { r -= U; k++; } while (r <= -U) { r += U; k--; } }
+        for (int lap = 0; lap <= (U % 4 ? 1 : 0); lap++, k += vx > 0 ? -1 : 1) {
+            int64_t s = (num - k * U) / vx, yy = Dy + k * U + vy * s;
+            if (yy <= 1 && yy >= -1) TEST(s, k);
+        }
+    }
+    return best;
+#undef TEST
+}
+
+/* schedule particle i's next event from its (x, y, t0, d); lowers partners' events as needed */
+static void schedule(World *w, int32_t i) {
+    int64_t ws = wall_steps(w, i), best = ws == INF ? INF : w->t0[i] + ws, key[3];
+    int d = w->d[i];
+    keys_of(w, i, key);
+    for (int j = 0; j < 3; j++) {
+        int kind = KIND[d][j];
+        int64_t nb = w->nb[kind], range = kind >= 4 ? 2 : 1;
+        int64_t prevb = -1;
+        for (int64_t dk = -range; dk <= range; dk++) {
+            int64_t kk = key[j] + dk;
+            if (kind == 4) { if (kk < 0 || kk >= w->V2) continue; }
+            else kk = wrap(kk, kind == 5 ? w->U2 : w->U);
+            int64_t b = kk >> 1;
+            if (b == prevb || b >= nb) continue;
+            prevb = b;
+            if (!((w->nbm[kind][b >> 6] >> (b & 63)) & 1)) continue;
+            for (int32_t c = w->head[kind][b]; c >= 0; c = w->nxt[SLOT[w->d[c]][kind]][c]) {
+                if (c == i) continue;
+                if (kind < 4 && w->d[c] == d) continue;  /* same direction: covered by key 4/5 */
+                int64_t t = meet(w, i, c);
+                if (t == INF) continue;
+                if (t < best) best = t;
+                if (t < w->ev[c]) { w->ev[c] = t; hpush(w, t, c); }
+            }
+        }
+    }
+    index_add(w, i, key);
+    w->ev[i] = best;
+    if (best != INF) hpush(w, best, i);
+}
+
+static inline void set_dir(World *w, int32_t i) {
+    int64_t o = w->t0[i] & 1;
+    w->d[i] = (int)(((w->x[i] - o) & 1) + 2 * ((w->y[i] - o) & 1));
+}
+
+static inline void canon(World *w, int64_t *x, int64_t *y) {
+    while (*x + *y < 0) { *x += w->U; *y += w->U; }
+    while (*x + *y >= w->U2) { *x -= w->U; *y -= w->U; }
+}
+
+static int32_t new_particle(World *w, int64_t x, int64_t y, int64_t t) {
+    int32_t i;
+    if (w->free_head >= 0) { i = w->free_head; w->free_head = w->nxt[0][i]; }
+    else { grow(w, w->top + 1); i = w->top++; }
+    canon(w, &x, &y);
+    w->x[i] = x; w->y[i] = y; w->t0[i] = t; w->alive[i] = 1; w->nalive++;
+    set_dir(w, i);
+    return i;
+}
+
+static void free_particle(World *w, int32_t i) {
+    w->alive[i] = 0; w->nalive--; w->ver[i]++;
+    w->nxt[0][i] = w->free_head; w->free_head = i;
+}
+
+/* is cell (x, y) occupied by a particle at step t (all events before t done)? */
+static int occupied(World *w, int64_t x, int64_t y, int64_t t) {
+    int64_t v = x - y, u2 = wrap(x + y, w->U2);
+    for (int32_t i = 0; i < w->top; i++) {
+        if (!w->alive[i]) continue;
+        int64_t dt = t - w->t0[i], xi = w->x[i] + DX[w->d[i]] * dt, yi = w->y[i] + DY[w->d[i]] * dt;
+        if (xi - yi == v && wrap(xi + yi, w->U2) == u2) return 1;
+    }
+    return 0;
 }
 
 void world_add(World *w, int64_t n, const int64_t *xy, int wall) {
-    grow(w, w->n + n);
     for (int64_t k = 0; k < n; k++) {
-        int64_t i = index_of(w, xy[2 * k], xy[2 * k + 1]);
-        if (i < 0) continue;
-        if (wall) { setb(w->wall, i); continue; }
-        if (getb(w->mov, i)) continue;
-        setb(w->mov, i);
-        w->pu[w->n] = (int32_t)(i / w->S); w->pv[w->n] = (int32_t)(i % w->S);
-        w->p[w->n++] = i;
+        int64_t x = xy[2 * k], y = xy[2 * k + 1], v = x - y;
+        if (v < w->lo || v > w->hi) continue;
+        if (wall) {
+            int64_t u2 = wrap(x + y, w->U2), vv = v - w->lo + PAD;
+            w->wu[u2 * w->RWU + (vv >> 6)] |= 1ULL << (vv & 63);
+            w->wv[vv * w->RWV + (u2 >> 6)] |= 1ULL << (u2 & 63);
+            continue;
+        }
+        if (is_wall(w, x, y) || occupied(w, x, y, w->t)) continue;
+        schedule(w, new_particle(w, x, y, w->t));
     }
 }
 
-static void step(World *w) {
-    const int o = (int)(w->t & 1);
-    const int64_t S = w->S, DX = S + 1, DY = S - 1, N = w->N;
-    const int32_t U2 = (int32_t)w->U2, lo = (int32_t)w->lo;
-    uint64_t *mov = w->mov, *wall = w->wall;
-    int64_t m = 0;
-    grow(w, 4 * w->n + 4);
-    int64_t *np = w->np;
-    int32_t *nu = w->nu, *nv = w->nv;
-    static const int32_t DU[4] = {0, 1, 1, 2}, DV[4] = {0, 1, -1, 0};  /* TL TR BL BR from TL */
-    for (int64_t k = 0; k < w->n; k++) {
-        int64_t i = w->p[k];
-        if (!getb(mov, i)) continue;  /* its block was already handled */
-        int32_t u2 = w->pu[k], vv = w->pv[k], v = vv - PAD + lo;
-        int rx = (((u2 + v) >> 1) - o) & 1, ry = (((u2 - v) >> 1) - o) & 1;
-        int me = rx + 2 * ry;
-        int64_t c0 = i - rx * DX - ry * DY;
-        int32_t tu = u2 - DU[me], tv = vv - DV[me];
-        if (c0 < 0) c0 += N;
-        if (tu < 0) tu += U2;
-        int64_t ci[4] = {c0, c0 + DX, c0 + DY, c0 + DX + DY};
-        for (int c = 1; c < 4; c++) if (ci[c] >= N) ci[c] -= N;
-        int mv[4], wl[4], f[4], cnt = 0;
-        for (int c = 0; c < 4; c++) {
-            mv[c] = getb(mov, ci[c]); wl[c] = getb(wall, ci[c]);
-            f[c] = mv[c] | wl[c]; cnt += f[c];
+/* ------------------------------------------------------------------ events */
+static void process_block(World *w, int64_t T, int32_t *ids, int m) {
+    int64_t o = T & 1, x0 = w->x[ids[0]] + DX[w->d[ids[0]]] * (T - w->t0[ids[0]]), y0 = w->y[ids[0]] + DY[w->d[ids[0]]] * (T - w->t0[ids[0]]);
+    x0 -= (x0 - o) & 1; y0 -= (y0 - o) & 1;
+    canon(w, &x0, &y0);
+    int wl[4], mv[4] = {-1, -1, -1, -1}, f[4], cnt = 0, vmaj = w->d[ids[0]] == 0 || w->d[ids[0]] == 3;
+    for (int c = 0; c < 4; c++)  /* from the bitmap this particle's last scan read: those lines are hot */
+        wl[c] = vmaj ? is_wall_v(w, x0 + (c & 1), y0 + (c >> 1)) : is_wall(w, x0 + (c & 1), y0 + (c >> 1));
+    for (int q = 0; q < m; q++) {
+        int32_t i = ids[q];
+        int64_t dt = T - w->t0[i], x = w->x[i] + DX[w->d[i]] * dt, y = w->y[i] + DY[w->d[i]] * dt;
+        mv[((x - o) & 1) + 2 * ((y - o) & 1)] = i;
+    }
+    for (int c = 0; c < 4; c++) { f[c] = wl[c] | (mv[c] >= 0); cnt += f[c]; }
+    int to[4] = {0, 1, 2, 3};  /* where the content of each cell goes */
+    if (cnt == 1) { for (int c = 0; c < 4; c++) to[c] = 3 - c; }
+    else if (cnt == 2 && f[0] && f[3]) { to[0] = 1; to[3] = 2; }
+    else if (cnt == 2 && f[1] && f[2]) { to[1] = 0; to[2] = 3; }
+    for (int c = 0; c < 4; c++) if (wl[c] && to[c] != c) w->broken = 1;
+    for (int c = 0; c < 4; c++) {
+        int32_t i = mv[c];
+        if (i < 0) continue;
+        index_del(w, i);
+        w->ver[i]++;
+        w->x[i] = x0 + (to[c] & 1); w->y[i] = y0 + (to[c] >> 1); w->t0[i] = T + 1;
+        canon(w, &w->x[i], &w->y[i]);
+        set_dir(w, i);
+    }
+    for (int c = 0; c < 4; c++) {
+        int32_t i = mv[c];
+        if (i < 0) continue;
+        int64_t v = w->x[i] - w->y[i];
+        if (v < w->lo || v > w->hi) free_particle(w, i);
+        else schedule(w, i);
+    }
+}
+
+/* run all events at steps < t_end */
+static void run_to(World *w, int64_t t_end) {
+    while (w->hn && w->ht[0] < t_end) {
+        int64_t T = w->ht[0];
+        int m = 0;
+        while (w->hn && w->ht[0] == T) {  /* every live event at this step */
+            int32_t id = w->hid[0], ver = w->hver[0];
+            hpop(w);
+            if (!w->alive[id] || ver != w->ver[id] || w->mark[id] == (int32_t)(T & 0x7fffffff)) continue;
+            w->mark[id] = (int32_t)(T & 0x7fffffff);
+            if (m == w->gcap) { w->gcap = w->gcap ? 2 * w->gcap : 64; w->grp = realloc(w->grp, w->gcap * 4 * 2); }
+            w->grp[m++] = id;
         }
-        if (cnt == 1) {  /* lone particle: to the opposite corner */
-            clrb(mov, i);
-            int c = 3 - me, cu = tu + DU[c];
-            np[m] = ci[c]; nu[m] = cu >= U2 ? cu - U2 : cu; nv[m] = tv + DV[c]; m++;
-            continue;
-        }
-        int g[4];
-        if (cnt == 2 && f[0] && f[3]) { g[0] = 0; g[3] = 0; g[1] = 1; g[2] = 1; }
-        else if (cnt == 2 && f[1] && f[2]) { g[1] = 0; g[2] = 0; g[0] = 1; g[3] = 1; }
-        else { for (int c = 0; c < 4; c++) g[c] = f[c]; }
-        for (int c = 0; c < 4; c++) {
-            if (mv[c]) clrb(mov, ci[c]);
-            if (wl[c] && !g[c]) w->broken = 1;
-        }
-        for (int c = 0; c < 4; c++)
-            if (g[c] && !wl[c]) {
-                int cu = tu + DU[c];
-                np[m] = ci[c]; nu[m] = cu >= U2 ? cu - U2 : cu; nv[m] = tv + DV[c]; m++;
+        /* group by block: each particle's block corner at T */
+        int64_t o = T & 1;
+        int32_t *ids = w->grp, *tmp = w->grp + w->gcap;
+        for (int q = 0; q < m; q++) {
+            if (ids[q] < 0) continue;
+            int32_t i = ids[q];
+            int64_t dt = T - w->t0[i], xa = w->x[i] + DX[w->d[i]] * dt, ya = w->y[i] + DY[w->d[i]] * dt;
+            xa -= (xa - o) & 1; ya -= (ya - o) & 1; canon(w, &xa, &ya);
+            int n = 0;
+            tmp[n++] = i; ids[q] = -1;
+            for (int r = q + 1; r < m; r++) {
+                int32_t j = ids[r];
+                if (j < 0) continue;
+                int64_t dj = T - w->t0[j], xb = w->x[j] + DX[w->d[j]] * dj, yb = w->y[j] + DY[w->d[j]] * dj;
+                xb -= (xb - o) & 1; yb -= (yb - o) & 1; canon(w, &xb, &yb);
+                if (xa == xb && ya == yb) { tmp[n++] = j; ids[r] = -1; }
             }
+            process_block(w, T, tmp, n);
+        }
     }
-    int64_t kept = 0;  /* write new positions; drop those in the padding (sinks) */
-    const int32_t vmax = PAD + (int32_t)w->V2;
-    for (int64_t k = 0; k < m; k++) {
-        if (nv[k] < PAD || nv[k] >= vmax) continue;
-        setb(mov, np[k]);
-        np[kept] = np[k]; nu[kept] = nu[k]; nv[kept] = nv[k]; kept++;
-    }
-    w->np = w->p; w->p = np;
-    int32_t *t;
-    t = w->pu; w->pu = nu; w->nu = t;
-    t = w->pv; w->pv = nv; w->nv = t;
-    w->n = kept;
-    w->t++;
+    w->t = t_end;
 }
 
 /* Run from w->t until t_end. feeds: sorted by time, (t, x, y) triples, added
@@ -163,17 +452,20 @@ int64_t world_run_trace(World *w, int64_t t_end, int64_t nf, const int64_t *feed
     while (fi < nf && feeds[3 * fi] < w->t) fi++;
     while (ri < nr && reads[3 * ri] < w->t) ri++;
     while (w->t < t_end) {
-        while (fi < nf && feeds[3 * fi] == w->t) { world_add(w, 1, feeds + 3 * fi + 1, 0); fi++; }
-        while (ri < nr && reads[3 * ri] == w->t) {
-            int64_t i = index_of(w, reads[3 * ri + 1], reads[3 * ri + 2]);
-            out[ri] = i < 0 ? 0 : getb(w->mov, i);
-            ri++;
-        }
-        step(w);
-        if (!counts) continue;
-        counts[k++] = w->n;
-        for (int64_t j = 0; j < w->n && m < cap; j++, m++) {
-            uv[2 * m] = w->pu[j]; uv[2 * m + 1] = w->pv[j] - PAD + (int32_t)w->lo;
+        int64_t t = w->t, next = t_end;
+        if (fi < nf && feeds[3 * fi] < next) next = feeds[3 * fi];
+        if (ri < nr && reads[3 * ri] < next) next = reads[3 * ri];
+        if (counts && next > t + 1) next = t + 1;
+        run_to(w, next);
+        while (fi < nf && feeds[3 * fi] == next) { world_add(w, 1, feeds + 3 * fi + 1, 0); fi++; }
+        while (ri < nr && reads[3 * ri] == next) { out[ri] = (uint8_t)occupied(w, reads[3 * ri + 1], reads[3 * ri + 2], next); ri++; }
+        if (counts && next == t + 1) {
+            counts[k++] = w->nalive;
+            for (int32_t i = 0; i < w->top && m < cap; i++) {
+                if (!w->alive[i]) continue;
+                int64_t dt = next - w->t0[i], x = w->x[i] + DX[w->d[i]] * dt, y = w->y[i] + DY[w->d[i]] * dt;
+                uv[2 * m] = (int32_t)wrap(x + y, w->U2); uv[2 * m + 1] = (int32_t)(x - y); m++;
+            }
         }
     }
     return m;
@@ -184,248 +476,19 @@ void world_run(World *w, int64_t t_end, int64_t nf, const int64_t *feeds,
     world_run_trace(w, t_end, nf, feeds, nr, reads, out, NULL, 0, NULL);
 }
 
-int64_t world_count(World *w) { return w->n; }
+int64_t world_count(World *w) { return w->nalive; }
 int world_broken(World *w) { return w->broken; }
 int64_t world_time(World *w) { return w->t; }
 void world_set_time(World *w, int64_t t) { w->t = t; }
 
 /* moving cells as (x, y) in canonical form (x + y in [0, 2U)) */
 int64_t world_cells(World *w, int64_t *xy, int64_t cap) {
-    int64_t n = w->n < cap ? w->n : cap;
-    for (int64_t k = 0; k < n; k++) {
-        int64_t u2 = w->pu[k], v = w->pv[k] - PAD + w->lo;
-        xy[2 * k] = (u2 + v) / 2; xy[2 * k + 1] = (u2 - v) / 2;
+    int64_t n = 0;
+    for (int32_t i = 0; i < w->top && n < cap; i++) {
+        if (!w->alive[i]) continue;
+        int64_t dt = w->t - w->t0[i], x = w->x[i] + DX[w->d[i]] * dt, y = w->y[i] + DY[w->d[i]] * dt;
+        canon(w, &x, &y);
+        xy[2 * n] = x; xy[2 * n + 1] = y; n++;
     }
-    return w->n;
-}
-
-/* ------------------------------------------------------------------------
- * Tiled multithreaded run (same result as world_run). Every epoch of D
- * steps, the particles are split by v (across the band) into T ranges with
- * equal counts. Thread i copies the particles within G = 2*D + 4 of its
- * range into a private bitmap, runs the D steps on that window alone and
- * keeps only the particles that end inside its own range. Nothing moves
- * faster than 2 in v per step, so whatever the window gets wrong near its
- * edges cannot reach the range in D steps: the kept particles are exact.
- * (Cutting along u does worse: the lanes travel along u together, so u
- * ranges get narrower than their margins.) Reads are done by the thread
- * owning the read cell's range. */
-
-typedef struct {
-    uint64_t *mov;                        /* private moving bits (full size) */
-    int64_t *p, *np; int32_t *pu, *pv, *nu, *nv; int64_t n, cap;
-    int32_t lo, hi, wlo, whi;             /* own range and window, in pv */
-    int64_t *fe; int64_t nfe, fcap;       /* feeds in the window: (t, i, u, v) x4 */
-    int64_t *rd; int64_t nrd, rcap;       /* my reads this epoch: (t, i, j) x3 */
-} Tile;
-
-typedef struct {
-    World *w; int T; int64_t t0, t1; uint8_t *out;
-    Tile *tl; int32_t *cuts;              /* T+1 range ends in pv */
-    _Alignas(64) atomic_int count; _Alignas(64) atomic_int sense; int stop;
-} TP;
-
-#include <time.h>
-static double prof[4];  /* serial setup, parallel epoch (thread 0), merge, max tile particles */
-static inline double now(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return ts.tv_sec + 1e-9 * ts.tv_nsec; }
-void world_prof(double *o) { for (int j = 0; j < 4; j++) { o[j] = prof[j]; prof[j] = 0; } }
-
-static void tbar(TP *M, int *local) {
-    *local = !*local;
-    if (atomic_fetch_add(&M->count, 1) == M->T - 1) { atomic_store(&M->count, 0); atomic_store(&M->sense, *local); }
-    else while (atomic_load_explicit(&M->sense, memory_order_acquire) != *local) ;
-}
-
-static void tl_grow(Tile *t, int64_t need) {
-    if (need <= t->cap) return;
-    while (t->cap < need) t->cap = t->cap ? 2 * t->cap : 1024;
-    t->p = realloc(t->p, t->cap * 8); t->np = realloc(t->np, t->cap * 8);
-    t->pu = realloc(t->pu, t->cap * 4); t->pv = realloc(t->pv, t->cap * 4);
-    t->nu = realloc(t->nu, t->cap * 4); t->nv = realloc(t->nv, t->cap * 4);
-}
-
-static void tile_add(Tile *t, int64_t i, int32_t u, int32_t v) {
-    if (getb(t->mov, i)) return;
-    tl_grow(t, t->n + 1);
-    setb(t->mov, i);
-    t->p[t->n] = i; t->pu[t->n] = u; t->pv[t->n] = v; t->n++;
-}
-
-static void tile_step(World *w, Tile *t, int o) {
-    const int64_t S = w->S, DX = S + 1, DY = S - 1, N = w->N;
-    const int32_t U2 = (int32_t)w->U2, lo = (int32_t)w->lo;
-    uint64_t *mov = t->mov; const uint64_t *wall = w->wall;
-    static const int32_t DU[4] = {0, 1, 1, 2}, DV[4] = {0, 1, -1, 0};
-    int64_t m = 0;
-    tl_grow(t, 4 * t->n + 4);
-    int64_t *np = t->np; int32_t *nu = t->nu, *nv = t->nv;
-    for (int64_t k = 0; k < t->n; k++) {
-        int64_t i = t->p[k];
-        if (!getb(mov, i)) continue;
-        int32_t u2 = t->pu[k], vv = t->pv[k], v = vv - PAD + lo;
-        int rx = (((u2 + v) >> 1) - o) & 1, ry = (((u2 - v) >> 1) - o) & 1;
-        int me = rx + 2 * ry;
-        int64_t c0 = i - rx * DX - ry * DY;
-        int32_t tu = u2 - DU[me], tv = vv - DV[me];
-        if (c0 < 0) c0 += N;
-        if (tu < 0) tu += U2;
-        int64_t ci[4] = {c0, c0 + DX, c0 + DY, c0 + DX + DY};
-        int mv[4], wl[4], f[4], cnt = 0;
-        for (int c = 0; c < 4; c++) {
-            if (ci[c] >= N) ci[c] -= N;
-            mv[c] = getb(mov, ci[c]); wl[c] = getb(wall, ci[c]);
-            f[c] = mv[c] | wl[c]; cnt += f[c];
-        }
-        int g[4];
-        if (cnt == 1) { for (int c = 0; c < 4; c++) g[c] = f[3 - c]; }
-        else if (cnt == 2 && f[0] && f[3]) { g[0] = 0; g[3] = 0; g[1] = 1; g[2] = 1; }
-        else if (cnt == 2 && f[1] && f[2]) { g[1] = 0; g[2] = 0; g[0] = 1; g[3] = 1; }
-        else { for (int c = 0; c < 4; c++) g[c] = f[c]; }
-        for (int c = 0; c < 4; c++) {
-            if (mv[c]) clrb(mov, ci[c]);
-            if (wl[c] && !g[c]) w->broken = 1;   /* only trusted inside own range; rechecked serially if set */
-        }
-        for (int c = 0; c < 4; c++) {
-            if (!g[c] || wl[c]) continue;
-            int32_t nvv = tv + DV[c];
-            if (nvv < t->wlo || nvv >= t->whi) continue;   /* left the window (or the band) */
-            int32_t cu = tu + DU[c]; if (cu >= U2) cu -= U2;
-            np[m] = ci[c]; nu[m] = cu; nv[m] = nvv; m++;
-        }
-    }
-    for (int64_t k = 0; k < m; k++) setb(mov, np[k]);
-    t->np = t->p; t->p = np;
-    int32_t *tmp = t->pu; t->pu = nu; t->nu = tmp;
-    tmp = t->pv; t->pv = nv; t->nv = tmp;
-    t->n = m;
-}
-
-typedef struct { TP *M; int id; } TArg;
-
-static void tile_epoch(TP *M, int id) {
-    World *w = M->w; Tile *t = &M->tl[id];
-    int32_t G = 2 * (int32_t)(M->t1 - M->t0) + 4, vmax = PAD + (int32_t)w->V2;
-    t->lo = M->cuts[id]; t->hi = M->cuts[id + 1];
-    t->wlo = t->lo - G > PAD ? t->lo - G : PAD;
-    t->whi = t->hi + G < vmax ? t->hi + G : vmax;
-    t->n = 0;
-    for (int64_t k = 0; k < w->n; k++)
-        if (w->pv[k] >= t->wlo && w->pv[k] < t->whi) tile_add(t, w->p[k], w->pu[k], w->pv[k]);
-    for (int64_t tt = M->t0; tt < M->t1; tt++) {
-        for (int64_t j = 0; j < t->nfe; j++)   /* feeds due now inside the window */
-            if (t->fe[4 * j] == tt) tile_add(t, t->fe[4 * j + 1], (int32_t)t->fe[4 * j + 2], (int32_t)t->fe[4 * j + 3]);
-        for (int64_t j = 0; j < t->nrd; j++)   /* reads of cells in my own range */
-            if (t->rd[3 * j] == tt) M->out[t->rd[3 * j + 2]] = (uint8_t)getb(t->mov, t->rd[3 * j + 1]);
-        tile_step(w, t, (int)(tt & 1));
-    }
-    for (int64_t k = 0; k < t->n; k++) clrb(t->mov, t->p[k]);  /* leave the private map clean */
-    int64_t keep = 0;  /* keep only what ended in my own range */
-    for (int64_t q = 0; q < t->n; q++) {
-        if (t->pv[q] < t->lo || t->pv[q] >= t->hi) continue;
-        t->p[keep] = t->p[q]; t->pu[keep] = t->pu[q]; t->pv[keep] = t->pv[q]; keep++;
-    }
-    t->n = keep;
-}
-
-static void *tile_worker(void *arg) {
-    TP *M = ((TArg *)arg)->M; int id = ((TArg *)arg)->id;
-    int local = 0;
-    while (1) {
-        tbar(M, &local);              /* thread 0 has set up the epoch */
-        if (M->stop) break;
-        tile_epoch(M, id);
-        tbar(M, &local);              /* results ready for thread 0 */
-    }
-    return NULL;
-}
-
-#define HB 16  /* histogram bin width in pv for the cuts */
-
-void world_run_tiles(World *w, int64_t t_end, int64_t nf, const int64_t *feeds,
-                     int64_t nr, const int64_t *reads, uint8_t *out, int T, int64_t D) {
-    TP M; memset(&M, 0, sizeof M);
-    M.w = w; M.T = T; M.out = out;
-    M.tl = calloc(T, sizeof(Tile));
-    int64_t words = w->N / 64 + 1;
-    if (w->ntile_mov < T) {  /* allocate once and touch now: page faults later would stall an epoch */
-        w->tile_mov = realloc(w->tile_mov, T * sizeof(uint64_t *));
-        for (int k = w->ntile_mov; k < T; k++) { w->tile_mov[k] = malloc(words * 8); memset(w->tile_mov[k], 0, words * 8); }
-        w->ntile_mov = T;
-    }
-    for (int k = 0; k < T; k++) M.tl[k].mov = w->tile_mov[k];
-    M.cuts = malloc((T + 1) * 4);
-    int64_t nb = w->S / HB + 1, *hist = malloc(nb * 8);
-    pthread_t th[T]; TArg args[T];
-    for (int k = 1; k < T; k++) { args[k] = (TArg){&M, k}; pthread_create(&th[k], NULL, tile_worker, &args[k]); }
-    int local = 0;
-    int64_t fi = 0, ri = 0;
-    while (fi < nf && feeds[3 * fi] < w->t) fi++;
-    while (ri < nr && reads[3 * ri] < w->t) ri++;
-    /* serial particle list lives in w->p/pu/pv; w->mov is not used in between */
-    for (int64_t k = 0; k < w->n; k++) clrb(w->mov, w->p[k]);
-    while (w->t < t_end) {
-        double c0 = now();
-        M.t0 = w->t; M.t1 = w->t + D < t_end ? w->t + D : t_end;
-        /* equal-count ranges from a coarse histogram of v */
-        memset(hist, 0, nb * 8);
-        for (int64_t k = 0; k < w->n; k++) hist[w->pv[k] / HB]++;
-        M.cuts[0] = 0; M.cuts[T] = (int32_t)w->S;
-        int64_t acc = 0; int k = 1;
-        for (int64_t b = 0; b < nb && k < T; b++) {
-            acc += hist[b];
-            while (k < T && acc * T >= w->n * k) M.cuts[k++] = (int32_t)((b + 1) * HB);
-        }
-        for (; k < T; k++) M.cuts[k] = (int32_t)w->S;
-        /* feeds of this epoch, to every tile whose window holds them */
-        int32_t G = 2 * (int32_t)(M.t1 - M.t0) + 4;
-        for (int k = 0; k < T; k++) M.tl[k].nfe = 0;
-        for (; fi < nf && feeds[3 * fi] < M.t1; fi++) {
-            int64_t i = index_of(w, feeds[3 * fi + 1], feeds[3 * fi + 2]);
-            if (i < 0) continue;
-            int32_t v = (int32_t)(i % w->S);
-            for (int k = 0; k < T; k++) {
-                if (v < M.cuts[k] - G || v >= M.cuts[k + 1] + G) continue;
-                Tile *t = &M.tl[k];
-                if (t->fcap < t->nfe + 1) { t->fcap = 2 * (t->nfe + 1); t->fe = realloc(t->fe, t->fcap * 4 * 8); }
-                int64_t *e = t->fe + 4 * t->nfe++;
-                e[0] = feeds[3 * fi]; e[1] = i; e[2] = i / w->S; e[3] = v;
-            }
-        }
-        for (int k = 0; k < T; k++) M.tl[k].nrd = 0;
-        for (; ri < nr && reads[3 * ri] < M.t1; ri++) {
-            int64_t i = index_of(w, reads[3 * ri + 1], reads[3 * ri + 2]);
-            if (i < 0) continue;
-            int32_t v = (int32_t)(i % w->S);
-            int k = 0;
-            while (k < T - 1 && v >= M.cuts[k + 1]) k++;
-            Tile *t = &M.tl[k];
-            if (t->rcap < t->nrd + 1) { t->rcap = 2 * (t->nrd + 1); t->rd = realloc(t->rd, t->rcap * 3 * 8); }
-            int64_t *e = t->rd + 3 * t->nrd++;
-            e[0] = reads[3 * ri]; e[1] = i; e[2] = ri;
-        }
-        double c1 = now();
-        tbar(&M, &local);
-        tile_epoch(&M, 0);
-        tbar(&M, &local);
-        double c2 = now();
-        for (int k = 0; k < T; k++) if (M.tl[k].n > prof[3]) prof[3] = M.tl[k].n;
-        /* merge: each tile keeps the particles that ended in its own range */
-        int64_t tot = 0;
-        for (int k = 0; k < T; k++) tot += M.tl[k].n;
-        grow(w, tot + 1);
-        w->n = 0;
-        for (int k = 0; k < T; k++) {
-            Tile *t = &M.tl[k];
-            memcpy(w->p + w->n, t->p, t->n * 8); memcpy(w->pu + w->n, t->pu, t->n * 4); memcpy(w->pv + w->n, t->pv, t->n * 4);
-            w->n += t->n;
-        }
-        w->t = M.t1;
-        prof[0] += c1 - c0; prof[1] += c2 - c1; prof[2] += now() - c2;
-    }
-    M.stop = 1;
-    tbar(&M, &local);
-    for (int k = 1; k < T; k++) pthread_join(th[k], NULL);
-    for (int64_t k = 0; k < w->n; k++) setb(w->mov, w->p[k]);
-    for (int k = 0; k < T; k++) { Tile *t = &M.tl[k]; free(t->p); free(t->np); free(t->pu); free(t->pv); free(t->nu); free(t->nv); free(t->fe); free(t->rd); }
-    free(M.tl); free(M.cuts); free(hist);
+    return w->nalive;
 }
