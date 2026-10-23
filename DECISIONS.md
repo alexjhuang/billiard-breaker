@@ -142,3 +142,36 @@ ball's block takes 4 reads instead of 8: 3.4 -> 6.7 frames/s under Node, about
 the C serial speed. Not done yet: threads in the browser need
 SharedArrayBuffer (cross-origin isolation, which Pages can only get through a
 service worker) and per-worker state for the ghost tiles.
+
+## 2026-10-23 — event-driven simulator: free flight is not stepped
+Measured on the game: 9.0 M particle-steps per frame, of which 272 k (3%)
+are blocks with more than one thing in them; everything else is a lone
+particle moving one cell. csim/bbm.c now keeps every particle as a straight
+line and jumps from event to event: the next wall is found by scanning the
+three rows in front of the particle in a bitmap (two orientations, rows of
+constant x−y for SE/NW movers and of constant x+y for NE/SW), the next
+partner through an index keyed by the coordinate two directions keep in
+common (x−t, y−t, x+t, y+t, and x−y / x+y for head-on pairs), with the
+meeting step solved in closed form. Events are grouped per block and the
+Margolus rule is applied as before, so the result is bit for bit the same
+(tests/test_fastsim.py vs cyl.py on dense random patterns, difftest vs the
+oracle). One core: 63 ms/frame, against 125 ms stepping serially and ~60 ms
+on 16 tile threads, so the threaded tiles are gone. The gain is bounded by
+the layout, not the engine: ~375 k reschedules per frame at ~165 ns each,
+because every lane detours in every slot. web/engine.js is the same engine
+in JavaScript (int32 times, re-based every frame): 141 ms/frame under node
+against 171 stepping. Positions at any step are extrapolated, so the page's
+pictures come free.
+
+## 2026-10-23 — arcade Breakout rules (SPEC.md unfrozen for this)
+Added, in the oracle and the circuit alike: brick rows score 7/5/3/1 (the
+arcade's red/orange/green/yellow; we have one row of each, not two), a
+9-bit score, four ball speeds raised after the 4th and 12th hit and on an
+orange or red brick, the paddle shrinking to half after the ball gets
+through to the ceiling, and a second wall of bricks before the win. Speed is
+a cadence (the ball moves on 1/2, 5/8, 3/4 or all frames, spread evenly by
+comparing the bit-reversed frame counter with a threshold) because the ball
+is one cell and moves one cell per frame: moving two cells would double the
+collision logic. Not done: the arcade's angle changes from where the ball
+hits the paddle (the ball here is strictly diagonal), its 8 brick rows, and
+the paddle re-growing. Circuit: 488 → 776 switch gates, state 51 → 71 bits.

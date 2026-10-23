@@ -12,8 +12,11 @@ def random_states(n, seed):
         yield st, inp
         st = oracle.step(st, *inp)
         if rng.random() < .02:  # jump to a random reachable-ish state
+            small = rng.randrange(2)  # (px stays within the paddle's clamp, as in every reachable state)
             st = st._replace(bx=rng.randrange(32), by=rng.randrange(32), dx=rng.randrange(2), dy=rng.randrange(2),
-                             px=rng.randrange(27), bricks=rng.getrandbits(32), lives=rng.randrange(4))
+                             px=rng.randrange(30 if small else 27), bricks=rng.getrandbits(32) if rng.random() < .9 else 0,
+                             lives=rng.randrange(4), score=rng.randrange(250), speed=rng.randrange(4), ph=rng.randrange(8),
+                             hits=rng.randrange(16), small=small, screen=rng.randrange(2))
 
 
 def test_logic_matches_oracle():

@@ -385,11 +385,11 @@ class World {
     return c - sh;
   }
 
-  cells(out, off, t) {  // append (x + y, x - y - lo) of every particle at step t as uint16 pairs
+  cells(out, off, t) {  // append ((x + y) / 2, x - y - lo) of every particle at step t as uint16 pairs (web.py's format)
     for (let i = 0; i < this.top; i++) {
       if (!this.alive[i]) continue;
       const dt = t - this.t0[i], x = this.x[i] + DX[this.d[i]] * dt, y = this.y[i] + DY[this.d[i]] * dt;
-      out[off++] = wrap(x + y, this.U2); out[off++] = x - y - this.lo;
+      out[off++] = wrap(x + y, this.U2) >> 1; out[off++] = x - y - this.lo;
     }
     return off;
   }

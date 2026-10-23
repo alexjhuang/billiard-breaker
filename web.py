@@ -28,7 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import fastsim
 import hardware
 from play import decode
-from state import FIELDS, H, PADDLE_W, PADDLE_Y, W, brick_at
+from state import FIELDS, H, PADDLE_W, PADDLE_W_SMALL, PADDLE_Y, POINTS, W, brick_at
 
 PICS = 3          # pictures of the machine per frame
 CLIP = 16         # steps per microscope clip
@@ -87,7 +87,9 @@ class Machine:
         return sorted(times.items())
 
     def picture(self, start, T, counts, cells):
-        """Ball positions as uint16 (x + y, x - y - lo) pairs; all steps of a clip."""
+        """Ball positions as uint16 ((x + y) / 2, x - y - lo) pairs, all steps of a
+        clip. x + y has the parity of x - y, so the page gets it back exactly."""
+        cells[0::2] = [u >> 1 for u in cells[0::2]]
         cells[1::2] = [v - self.lo for v in cells[1::2]]
         return dict(ph=T - start, counts=counts, b=base64.b64encode(array('H', cells).tobytes()).decode())
 
@@ -160,7 +162,7 @@ def machine_info(hw):
                 t_lo=t_lo, fields=FIELDS,
                 sched=sorted([t - t_lo, x, y, GATES[tag]] for t, cells, tag in hw['feeds'] for x, y in cells),
                 reads={name: [t - t_lo, cells] for name, (t, cells) in hw['reads'].items()},
-                field=dict(W=W, H=H, paddle_y=PADDLE_Y, paddle_w=PADDLE_W,
+                field=dict(W=W, H=H, paddle_y=PADDLE_Y, paddle_w=PADDLE_W, paddle_w_small=PADDLE_W_SMALL, points=list(POINTS),
                            bricks=[[x0, y0, x1 - x0 + 1, y1 - y0 + 1] for i, (x0, y0, x1, y1) in sorted(bricks.items())]))
     return json.dumps(meta).encode(), gzip.compress(squares.tobytes(), 6)
 

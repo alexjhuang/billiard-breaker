@@ -13,7 +13,7 @@ import time
 import game_machine
 import oracle
 from hw import game
-from state import State
+from state import State, paddle_w
 
 EXT = ('left', 'right', 'reset')
 
@@ -24,22 +24,35 @@ def bits_to_state(bits):
     return game.state_of(env)
 
 
+def aim(st):
+    """Where the bot wants the paddle's left edge: under the ball's next crossing
+    of the paddle row (the oracle tells it; the paddle moves 1 a frame, so it
+    has to start early when the ball is fast and the paddle small)."""
+    s, w = st, paddle_w(st)
+    for _ in range(80):
+        if s.dy == 0 and s.by == 29 and oracle.moves(s):
+            bx_new = s.bx + (-1 if (s.dx == 1) != (s.bx == 0) else 1)
+            return min(max(bx_new - w // 2, 0), 32 - w)
+        s = oracle.step(s, 0, 0, 0)
+    return st.px
+
+
 def inputs_for(seed, n):
     """Per-frame inputs, decided from the oracle's state (the machine must agree)."""
     rng = random.Random(seed)
     st, out = oracle.INIT, []
     if seed >= 1000:  # pure bot, no random resets: plays games to the end (covers win)
         for _ in range(n):
-            c = st.px + 3
-            inp = dict(left=int(st.bx < c - 1), right=int(st.bx > c),
+            c = aim(st)
+            inp = dict(left=int(st.px > c), right=int(st.px < c),
                        reset=int((oracle.win(st) or oracle.lose(st)) and rng.random() < .05))
             out.append(inp)
             st = oracle.step(st, inp['left'], inp['right'], inp['reset'])
         return out
     for _ in range(n):
         if seed % 2 and rng.random() < .9:
-            c = st.px + 3
-            inp = dict(left=int(st.bx < c - 1), right=int(st.bx > c), reset=0)
+            c = aim(st)
+            inp = dict(left=int(st.px > c), right=int(st.px < c), reset=0)
         else:
             inp = dict(left=int(rng.random() < .35), right=int(rng.random() < .35), reset=0)
         inp['reset'] = int(rng.random() < .005 or (oracle.win(st) or oracle.lose(st)) and rng.random() < .1)

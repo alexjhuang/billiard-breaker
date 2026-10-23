@@ -35,6 +35,19 @@ Source of truth between sessions. Trust `python3 tests/run_all.py` over this fil
 - [x] M9 finish — README.md with measured numbers, layout images, final report.
 
 ## Current
+2026-10-23: two changes, both verified by the full suite (build/tests_atari.log):
+- csim/bbm.c is event-driven (free flight is not stepped; DECISIONS.md). One
+  core: 63 ms/frame on the 488-gate machine (stepping: 125 ms serial, ~60 ms on
+  16 tile threads, now removed). web/engine.js is the same engine: 141 vs 171
+  ms/frame under node. API of fastsim/Runner unchanged; `threads` is gone.
+- Arcade Breakout rules (SPEC.md): row points 7/5/3/1 + 9-bit score, 4 speeds
+  as a movement cadence, paddle shrink after a ceiling hit, second wall, win at
+  256. 776 gates, 1033 slots, P=71396, 184 lines: 7.8-8.5 frames/s in C, 3.7
+  under node. difftest's bot is now predictive (aims where the oracle says the
+  ball will cross row 29); it clears both walls by frame ~2190.
+Next: fewer events per frame (lanes' idle detours are ~12 events per lane per
+slot), or threads for the event engine (strips along the loop with a light-cone
+margin). Static site needs re-exporting (README "Static version").
 Static site live (2026-10-22): https://alexjhuang.github.io/billiard-breaker/ (gh-pages,
 built by `web.py --export`; JS engine in the browser, ~4.7 frames/s in headless
 Chromium here). Next for it: threads in the browser (SharedArrayBuffer via a

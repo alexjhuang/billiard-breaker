@@ -1,7 +1,7 @@
 # Brick Breaker on a Billiard Ball Computer
 
 **Play it in your browser: https://alexjhuang.github.io/billiard-breaker/** (the
-machine runs on your computer, ~5–10 frames/s; `python3 web.py` locally is faster).
+machine runs on your computer, ~4 frames/s; `python3 web.py` locally is faster).
 
 A playable brick-breaker game whose entire game logic is computed by billiard
 balls: a Margolus billiard-ball-model cellular automaton (BBMCA). The frontend
@@ -10,13 +10,21 @@ balls that is the same every frame), deletes balls that leave the world, and
 reads where the state balls are. Every frame of game state is computed by
 balls bouncing off mirrors and each other.
 
+The game has the arcade Breakout rules (SPEC.md): the four brick rows score
+7, 5, 3 and 1 points (red, orange, green, yellow); the ball starts slow and
+speeds up after the 4th and 12th brick, and when it hits an orange or a red
+one; once it gets through to the ceiling the paddle shrinks to half; clearing
+the wall brings a second one, and clearing that wins (256 points). Three
+lives. Ball speed is a cadence: the ball moves on 1/2, 5/8, 3/4 or all of the
+frames, so the machine's frame rate sets the pace.
+
 ```
 python3 game_machine.py     # compile the game into mirrors + a ball schedule (build/, ~10 s)
 python3 play.py             # play it (a/d or arrows, r reset, q quit; terminal >= 66x35)
 python3 web.py              # or in a browser, next to a live view of the machine: http://localhost:8000
 python3 play_oracle.py      # the same game in plain Python, for comparison
-python3 tests/run_all.py    # all tests, incl. the 20 x 1000-frame differential test (~3 min)
-python3 difftest.py 1000 20 --threads 4   # billiard machine vs reference, 20 x 1000 frames
+python3 tests/run_all.py    # all tests, incl. the 20 x 1000-frame differential test (~6 min)
+python3 difftest.py 1000 20 # billiard machine vs reference, 20 x 1000 frames
 ```
 
 Needs Python 3.12 (stdlib only) and gcc, which builds the C simulator on first use.
@@ -32,10 +40,10 @@ Needs Python 3.12 (stdlib only) and gcc, which builds the C simulator on first u
   frame you hold them.
 - **The billiard-ball computer** (right). The world is a loop, so it is drawn
   as a ring: angle = position along the loop, radius = height in the band. The
-  faint texture is the 1.17 M mirror cells. Every moving ball is drawn at its
+  faint texture is the 2.7 M mirror cells. Every moving ball is drawn at its
   real position, coloured by direction: data lanes, falling gate messengers,
   and jogs. The pictures come from the frame being computed while the game
-  shows the previous one. A frame is 43 456 steps, about 1/20 s, too fast to
+  shows the previous one. A frame is 71 396 steps, about 1/8 s, too fast to
   watch, so by default it works like a stroboscope. Each picture is a real
   moment of the current frame, a little later in the frame than the last one,
   so the computation front sweeps around the ring once every 8 s (slider: 1–32 s
@@ -51,22 +59,24 @@ Frames and ball positions stream to the page as server-sent events, and keys
 come back as POSTs. Neither the server nor the page contains any game rules.
 tests/test_web.py checks the frames against the oracle, and checks that every
 picture matches a separate replay of the machine at the stated steps. Measured
-here: 20 frames/s (the default `--fps` cap) at ~40 ms of compute per frame, and
-~115 KB/s per viewer.
+here: ~8.5 frames/s at ~116 ms of compute per frame (one core), and ~115 KB/s
+per viewer. The simulator does not step free flight, so the ball positions in
+the pictures are extrapolated to the requested steps, not stepped to them.
 
 To use it from another computer: `ssh -L 8000:localhost:8000 <host>`, or
 `python3 web.py --host 0.0.0.0`. Everyone watching shares one game. The
-machine (16 busy threads) pauses while nobody is connected.
+machine pauses while nobody is connected.
 
 **Static version (GitHub Pages).** `python3 web.py --export DIR` writes the
 same page plus `web/engine.js`, a JavaScript port of the C simulator and the
-frame runner, and the hardware as data (~130 KB in all). The machine then runs
-in the visitor's browser, in a Web Worker on one core: 6.7 frames/s under Node
-on this machine and ~5 in headless Chromium here. A laptop core should do
-somewhat better. tests/test_engine.py checks the JS engine against the C
-simulator (states, flags and every recorded ball), and a 1000-frame run
-matched the oracle. Published at https://alexjhuang.github.io/billiard-breaker/
-from the `gh-pages` branch. To update it:
+frame runner, and the hardware as data (~200 KB in all). The machine then runs
+in the visitor's browser, in a Web Worker on one core: 3.7 frames/s under Node
+on this machine (274 ms per frame; the old stepping engine took 171 ms per
+frame on the old, 40% smaller machine). A laptop core should do somewhat
+better. tests/test_engine.py checks the JS engine against the C simulator
+(states, flags and every recorded ball). Published at
+https://alexjhuang.github.io/billiard-breaker/ from the `gh-pages` branch. To
+update it:
 
 ```
 python3 web.py --export /tmp/site && cd /tmp/site && git init -q -b gh-pages && git add -A \
@@ -115,16 +125,23 @@ needed. Next-state values therefore drift down the band and are lifted back to
 their state lines as soon as they are final. compile.py turns slots into
 mirrors and the per-frame ball schedule; hardware.py exports just that.
 
-**The simulator (csim/bbm.c).** An exact sparse simulator: walls and moving
-balls in bitmaps, only moving balls visited each step. For speed it runs on
-threads using overlapping tiles: every 32 steps the balls are split across
-the band (by v) into ranges with equal counts, and each thread runs its range
-plus a ghost margin of 2·32+4 on a private copy, keeping only its own range.
-Nothing moves faster than 2 per step, so the kept balls are exact. (Cutting
-along the loop instead does badly: the lanes travel together, so those ranges
-end up narrower than their margins.) Results are identical to the
-single-threaded simulator (tests/test_fastsim.py), which is itself checked
-against the pure-Python reference simulators.
+**The simulator (csim/bbm.c).** Exact and event-driven: free flight is not
+stepped. Only 3% of the automaton's block updates do anything (a lone ball
+just moves to the opposite corner), so every ball is kept as a straight line
+(position at its last event, direction) and the simulator jumps to the next
+step at which its 2x2 block holds something else. The next wall is found by
+scanning the three bitmap rows in front of the ball, word by word (the walls
+are stored twice, as rows of constant x−y for SE/NW movers and of constant
+x+y for NE/SW movers). The next ball is found through an index on the
+coordinate two directions keep in common: two balls both moving right keep
+their x−t, so they can only ever share a block if those are within 1; likewise
+y−t, x+t, y+t, and x−y or x+y for head-on pairs. The meeting step is then
+solved in closed form. Events are popped from a heap, grouped by block, and
+the Margolus rule is applied to the block as usual. Results are identical to
+the stepping simulators (tests/test_fastsim.py checks dense random patterns
+against cyl.py). One core now does what 16 tile threads did before, and
+positions at any step are extrapolated for free, which is what the browser's
+ring view uses. web/engine.js is the same engine in JavaScript.
 
 | Whole frame (u along the loop, v up the band; dark = mirrors) |
 |---|
@@ -138,16 +155,22 @@ right bring next-state values back up. `docs/slot.png` zooms in on one gate.
 
 | | |
 |---|---|
-| frame rate, `python3 play.py --bench 40` (16 threads) | **15.9, 16.5, 18.2 frames/s** (3 runs, load average 51–59) |
-| frame rate, `--threads 1` | 6.8 frames/s |
-| world | cylinder 25 900 × 6 181 (u × x−y): 160 M cells |
-| frame period P | 43 456 automaton steps |
-| gates | 488 switch gates + 72 copies = 560 messengers per frame |
-| slots | 627 (3 input, 560 gate, 1 lift, 63 catch-up) |
-| mirrors | 150 402 bars (1.2 M wall cells) |
-| balls added per frame | 816 (560 messengers, 253 power, 3 key inputs) |
-| lanes alive | ≤ 150 lines; ~207 moving balls on average |
-| tiles (layout primitives placed) | 560 messengers, 560 splitters, 256 power/input sources, 321 drops, 37 300 jogs |
+| frame rate, `python3 play.py --bench 40` (one core) | **7.8, 8.5 frames/s** (2 runs; 116 ms per frame) |
+| the same machine stepped (old simulator, estimate from 125 ms on the old machine) | ~4 frames/s on one core |
+| in the browser (web/engine.js under Node) | 3.7 frames/s |
+| world | cylinder 42 472 × 7 541 (u × x−y): 320 M cells |
+| frame period P | 71 396 automaton steps |
+| events per frame | 518 k blocks with more than a lone ball; 686 k ball reschedules; 16 M ball-steps of free flight skipped |
+| gates | 776 switch gates + 94 copies = 870 messengers per frame |
+| slots | 1033 (3 input, 870 gate, 1 lift, 159 catch-up) |
+| mirrors | 337 000 bars (2.7 M wall cells) |
+| balls added per frame | 1273 (870 messengers, 400 power, 3 key inputs) |
+| lanes alive | ≤ 184 lines; ~228 moving balls on average |
+| tiles (layout primitives placed) | 870 messengers, 870 splitters, 403 power/input sources, 471 drops, 83 797 retimes (an up-jog and a down-jog each) |
+
+Before the arcade rules (488 gates, P = 43 456, 160 M cells): the event-driven
+simulator did 63 ms per frame on one core, against 125 ms stepping serially
+and ~60 ms stepping on 16 tile threads.
 
 ## Verification
 
@@ -155,22 +178,27 @@ right bring next-state values back up. `docs/slot.png` zooms in on one gate.
   and a full gate slot (all inputs, both gate orientations); small circuits
   (counter, 4-bit accumulator, keep-both gates) frame by frame vs the gate-level
   simulator; the game logic and the switch netlist vs the reference on random
-  states; the C simulator (serial and threaded) vs the Python simulators;
-  play.py's frames vs the reference, a check that play.py never imports game
-  logic, and a terminal smoke run; and the differential test below
-  (tests/test_difftest.py: 20 sequences × 1000 frames, plus 2 bot games of
-  1500 frames that must each reach a win).
+  states; the event-driven C simulator vs the Python stepping simulators on
+  dense random patterns; the JavaScript engine vs the C simulator; play.py's
+  frames vs the reference, a check that play.py never imports game logic, and
+  a terminal smoke run; and the differential test below (tests/test_difftest.py:
+  20 sequences × 1000 frames, plus 2 bot games of 2400 frames that must each
+  clear both walls and win).
 - `difftest.py`: the billiard machine against `oracle.py`, bit for bit, state
   and win/lose flags every frame. Last full run on the current build:
-  20/20 sequences × 1000 frames (4 threads) and 2 × 1500 frames with full
-  wins (16 threads, as play.py runs it); logs in build/.
+  20/20 sequences × 1000 frames and 2 × 2400 frames with full wins (256
+  points each); log in build/tests_atari.log.
 
 ## Known limitations
 
-- Frame rate depends on free cores: with 16 threads one frame is ~1 360
-  barrier-separated epochs of ~40 µs, so other load on the machine shows up
-  directly. Serially the simulator does ~17 ns per ball per step, and one frame
-  is ~43 000 steps × ~207 balls.
+- The event-driven simulator's cost is set by the layout, not by free flight:
+  every lane detours in every slot, so a ball has an event every ~32 steps and
+  a frame is ~690 k reschedules at ~170 ns each (C) or ~400 ns (JavaScript).
+  Shortening the frame now means fewer events, i.e. fewer idle detours.
+- The arcade rules cost 60%: 776 gates instead of 488, 184 lines instead of
+  150, so P grew from 43 456 to 71 396 steps and the frame rate halved. At
+  the base speed the ball moves every other frame, so at ~8 frames/s it
+  crosses the field in ~8 s; the game is meant to be played at 15+ frames/s.
 - Display lags input by one frame, and win/lose flags lag the state by one
   frame (they are computed from the frame's input state).
 - The circuit runs gates one per slot. Ideas that would shorten the frame
@@ -180,10 +208,14 @@ right bring next-state values back up. `docs/slot.png` zooms in on one gate.
 ## What I'd do next
 
 - Shorten the frame: lanes now all detour together in every slot, so P grows
-  by 28 steps per gate. Letting lanes keep their own timing and packing
-  independent gates into the same slot would cut P several-fold.
-- Partition the simulator in 2-D (u and v) to scale past ~16 threads.
-- Pin threads to cores; on a busy shared machine stragglers set the pace.
+  by 28 steps per gate and every lane costs ~12 events per slot. Letting lanes
+  keep their own timing and packing independent gates into the same slot
+  would cut both P and the event count several-fold.
+- Run the event engine on threads: events far apart along the loop are
+  independent for many steps (light cone), so the loop could be cut into
+  strips of events with a ghost margin, like the old tiled stepper.
+- The arcade's remaining features: angle from where the ball hits the paddle
+  (needs a ball with more than one speed per axis), 8 brick rows, a 5-ball game.
 
 ## Layout of the repo
 

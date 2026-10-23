@@ -48,8 +48,10 @@
     <header>
       <h1>Billiard Breaker</h1>
       <div class="stats">
+        <span>score <b id="score">–</b></span>
         <span>lives <b id="lives">–</b></span>
         <span>bricks <b id="bricks">–</b></span>
+        <span>speed <b id="spd">–</b></span>
         <span>frame <b id="frame">–</b></span>
       </div>
     </header>
@@ -96,12 +98,12 @@ const $ = id => document.getElementById(id);
 const dpr = () => window.devicePixelRatio || 1;
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const COLORS = ['#5ad1ff', '#ffb347', '#ff6bd6', '#b8f27c'];  // by direction: +u, falling, rising, -u
-const BRICK = [['#ff6b9a', '#c2306a'], ['#ffa25c', '#c96520'], ['#ffe066', '#c7a414'], ['#5ee6b0', '#1f9e74']];
+const BRICK = [['#ff5c5c', '#b8232a'], ['#ffa25c', '#c96520'], ['#5ee6b0', '#1f9e74'], ['#ffe066', '#c7a414']];  // rows: red, orange, green, yellow
 const SWEEPS = [0, 1, 2, 4, 8, 16, 32];  // seconds per sweep of a frame's computation; 0 = real time
 const CLIP_RATE = 40;  // microscope: machine steps shown per second
 
 let M = null, SQ = null;          // machine description, wall squares (sorted by u)
-const game = { prev: null, cur: null, t: 0, period: 0.06, parts: [], trail: [], lost: 0, flash: {} };
+const game = { prev: null, cur: null, t: 0, period: 0.06, parts: [], trail: [], lost: 0, flash: {}, pop: null };
 const mach = { batch: null, t: 0, period: 0.06, lastPh: 0, clip: null, next: null, clipT: 0,
                follow: true, depth: -400, pin: [0, -400], span: 90, R: null, sprites: null, info: null };
 let live = false, fault = null;
@@ -159,6 +161,7 @@ function onFrame(f) {
   if (old) {
     game.period = clamp(0.8 * game.period + 0.2 * (now - game.t), 1 / 60, 1);
     const gone = (old.state.bricks & ~f.state.bricks) >>> 0;
+    if (gone && !f.inp.reset && old.n > 0 && f.state.score > old.state.score) game.pop = { x: f.state.bx, y: f.state.by, pts: f.state.score - old.state.score, t: now };
     if (gone && !f.inp.reset && old.n > 0)
       for (let i = 0; i < 32; i++) if (gone >>> i & 1) burst(i);
     if (f.state.lives < old.state.lives && !f.inp.reset) game.lost = now;
@@ -166,8 +169,10 @@ function onFrame(f) {
   for (const k of ['left', 'right', 'reset']) if (f.inp[k]) game.flash[k] = now;
   game.prev = old; game.cur = f; game.t = now;
   const s = f.state, boot = f.n === 0;
+  $('score').textContent = boot ? '–' : s.score;
   $('lives').textContent = boot ? '–' : '●'.repeat(s.lives) || '0';
-  $('bricks').textContent = boot ? '–' : `${popcount(s.bricks)} / 32`;
+  $('bricks').textContent = boot ? '–' : `${popcount(s.bricks)} / 32 · wall ${s.screen + 1} of 2`;
+  $('spd').textContent = boot ? '–' : '▸'.repeat(s.speed + 1) + (s.small ? ' · small paddle' : '');
   $('frame').textContent = f.n;
   $('speed').innerHTML = `computed by the billiard balls in <b>${f.ms.toFixed(0)} ms</b> · <b>${f.fps.toFixed(1)}</b> frames/s`;
 }
@@ -187,7 +192,7 @@ function onPics(p) {
 
 function popcount(x) { let n = 0; for (; x; x >>>= 1) n += x & 1; return n; }
 
-function decode(q) {  // base64 uint16 (u, v - lo) pairs, all steps of the picture
+function decode(q) {  // base64 uint16 ((x + y) / 2, x - y - lo) pairs, all steps of the picture -> (x + y, x - y - lo)
   if (!q.steps) {
     let a = q.raw;  // from the worker; from the server, base64
     if (!a) {
@@ -195,8 +200,10 @@ function decode(q) {  // base64 uint16 (u, v - lo) pairs, all steps of the pictu
       for (let i = 0; i < bin.length; i++) b[i] = bin.charCodeAt(i);
       a = new Uint16Array(b.buffer);
     }
+    const u = new Int32Array(a.length);  // x + y has the parity of x - y
+    for (let j = 0; j < a.length; j += 2) { u[j + 1] = a[j + 1]; u[j] = 2 * a[j] + ((a[j + 1] + M.lo) & 1); }
     q.steps = []; let o = 0;
-    for (const c of q.counts) { q.steps.push(a.subarray(2 * o, 2 * (o + c))); o += c; }
+    for (const c of q.counts) { q.steps.push(u.subarray(2 * o, 2 * (o + c))); o += c; }
   }
   return q.steps;
 }
@@ -293,7 +300,7 @@ function drawGame(now, dt) {
     const near = Math.abs(s.bx - p.bx) <= 1 && Math.abs(s.by - p.by) <= 1;
     const bx = near ? p.bx + (s.bx - p.bx) * a : s.bx, by = near ? p.by + (s.by - p.by) * a : s.by;
     const px = Math.abs(s.px - p.px) <= 1 ? p.px + (s.px - p.px) * ap : s.px;
-    const PX = ox + px * cs + 2, PY = oy + F.paddle_y * cs + cs * .15, PW = F.paddle_w * cs - 4, PH = cs * .7;
+    const PX = ox + px * cs + 2, PY = oy + F.paddle_y * cs + cs * .15, PW = (s.small ? F.paddle_w_small : F.paddle_w) * cs - 4, PH = cs * .7;
     const pg = g.createLinearGradient(0, PY, 0, PY + PH); pg.addColorStop(0, '#e6f7ff'); pg.addColorStop(.5, '#5ad1ff'); pg.addColorStop(1, '#2a6fd6');
     g.save(); g.shadowColor = '#5ad1ff'; g.shadowBlur = 18; g.fillStyle = pg;
     g.beginPath(); g.roundRect(PX, PY, PW, PH, PH / 2); g.fill(); g.restore();
@@ -308,6 +315,13 @@ function drawGame(now, dt) {
     bgr.addColorStop(0, '#ffffff'); bgr.addColorStop(1, '#9fdcff');
     g.save(); g.shadowColor = '#bfe9ff'; g.shadowBlur = 20; g.fillStyle = bgr;
     g.beginPath(); g.arc(BX, BY, br, 0, 7); g.fill(); g.restore();
+  }
+  if (game.pop && now - game.pop.t < .8) {  // points of the last brick, floating up
+    const q = game.pop, a = 1 - (now - q.t) / .8;
+    g.globalAlpha = a; g.fillStyle = '#fff3b0'; g.textAlign = 'center';
+    g.font = `700 ${Math.round(cs * .9)}px ui-sans-serif, system-ui, sans-serif`;
+    g.fillText(`+${q.pts}`, ox + (q.x + .5) * cs, oy + (q.y + .5) * cs - (1 - a) * cs * 2);
+    g.globalAlpha = 1;
   }
   // brick shards
   game.parts = game.parts.filter(q => (q.t += dt) < q.life);

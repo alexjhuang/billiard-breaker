@@ -37,6 +37,7 @@ def test_engine_matches_c_simulator():
         assert decode(bits)._asdict() == f['state'], n
         assert (bits['win'], bits['lose']) == (f['win'], f['lose']), n
         for q, (T, counts, uv) in zip(f['pics'], got or []):
-            a = q['cells']
+            a = q['cells']  # ((x + y) / 2, x - y - lo) pairs
             assert counts == q['counts'], (n, q['ph'])
-            assert sorted(zip(a[0::2], [v + hw['lo'] for v in a[1::2]])) == sorted(zip(uv[0::2], uv[1::2])), (n, q['ph'])
+            vs = [v + hw['lo'] for v in a[1::2]]
+            assert sorted(zip([2 * h + (v & 1) for h, v in zip(a[0::2], vs)], vs)) == sorted(zip(uv[0::2], uv[1::2])), (n, q['ph'])

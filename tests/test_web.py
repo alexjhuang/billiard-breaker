@@ -50,9 +50,11 @@ def steps(counts, flat):
 
 
 def pic_steps(pic, lo):
+    """The (x + y, x - y) cells of a picture from its ((x + y) / 2, x - y - lo) uint16 pairs."""
     a = array('H')
     a.frombytes(base64.b64decode(pic['b']))
-    return steps(pic['counts'], [x if k % 2 == 0 else x + lo for k, x in enumerate(a)])
+    vs = [v + lo for v in a[1::2]]
+    return steps(pic['counts'], [c for h, v in zip(a[0::2], vs) for c in (2 * h + (v & 1), v)])
 
 
 def test_web_serves_the_machine():
@@ -75,7 +77,8 @@ def test_web_serves_the_machine():
         status, page = req('GET', '/')
         assert status == 200 and b'id="gc"' in page and b'id="mc"' in page
         meta = json.loads(req('GET', '/machine')[1])
-        assert len(meta['messengers']) == 560 and len(meta['field']['bricks']) == 32
+        assert len(meta['messengers']) == sum(tag == 'messenger' for _, _, tag in hardware.load()['feeds'])
+        assert len(meta['field']['bricks']) == 32 and meta['field']['points'] == [7, 5, 3, 1]
         walls = array('H')
         walls.frombytes(gzip.decompress(req('GET', '/walls')[1]))
         assert len(walls) == 2 * meta['squares'] and sum(walls[0::2]) < meta['U2']

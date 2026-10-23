@@ -4,7 +4,7 @@ No game rules here: it only draws a state and turns keys into input bits.
 """
 import curses
 import time
-from state import W, H, PADDLE_Y, PADDLE_W, brick_at
+from state import W, H, PADDLE_Y, POINTS, brick_at, paddle_w
 
 
 def lines(s, win, lose, fps=None):
@@ -15,7 +15,7 @@ def lines(s, win, lose, fps=None):
             i = brick_at(x, y)
             if (x, y) == (s.bx, s.by):
                 row += '()'
-            elif y == PADDLE_Y and s.px <= x < s.px + PADDLE_W:
+            elif y == PADDLE_Y and s.px <= x < s.px + paddle_w(s):
                 row += '=='
             elif i is not None and s.bricks >> i & 1:
                 row += '[]'
@@ -25,8 +25,9 @@ def lines(s, win, lose, fps=None):
     rows.append('+' + '-' * 2 * W + '+')
     msg = 'YOU WIN' if win else 'GAME OVER' if lose else ''
     rate = f'  {fps:.1f} fps' if fps is not None else ''
-    rows.append(f' lives {s.lives}  bricks {bin(s.bricks).count("1")}{rate}  {msg}')
-    rows.append(' a/d or arrows: move   r: reset   q: quit')
+    rows.append(f' score {s.score:3d}  lives {s.lives}  bricks {bin(s.bricks).count("1")}  wall {s.screen + 1}/2  '
+                f'speed {s.speed + 1}{rate}  {msg}')
+    rows.append(f' a/d or arrows: move   r: reset   q: quit   rows score {"/".join(map(str, POINTS))}')
     return rows
 
 
