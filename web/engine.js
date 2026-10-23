@@ -1,113 +1,396 @@
 // The billiard-ball machine in the browser, for the static (GitHub Pages)
-// version: the Margolus rule of csim/bbm.c and the frame runner of
-// fastsim.Runner, on the compiled hardware that web.py --export writes
-// (machine.json + wall squares). It adds the key and power balls at their
-// ports, steps the automaton and reads the output lanes; no game rules.
+// version: the event-driven Margolus simulator of csim/bbm.c and the frame
+// runner of fastsim.Runner, on the compiled hardware that web.py --export
+// writes (machine.json + wall squares). It adds the key and power balls at
+// their ports, runs the automaton and reads the output lanes; no game rules.
 // Runs in a Web Worker posting the same 'frame'/'pics' messages as web.py's
 // event stream, or under node for the tests (module.exports).
 'use strict';
-const PAD = 2;
-const bit = (a, i) => (a[i >>> 5] >>> (i & 31)) & 1;
+const PAD = 2, INF = 0x7fffffff;  // times and positions are int32: every frame start they are re-based (World.rebase)
+const DX = [1, -1, 1, -1], DY = [1, 1, -1, -1];            // d = rx + 2*ry: SE SW NE NW
+const KIND = Int8Array.of(0, 1, 4, 2, 1, 5, 0, 3, 5, 2, 3, 4);  // KIND[3d + j]: the keys each direction is indexed by
+const SLOT = Int8Array.of(0, 1, -1, -1, 2, -1, -1, 1, 0, -1, -1, 2, 0, -1, -1, 1, -1, 2, -1, -1, 0, 1, 2, -1);  // SLOT[6d + kind]: KIND inverted
+const wrap = (a, m) => { while (a < 0) a += m; while (a >= m) a -= m; return a; };
+const ctz = m => 31 - Math.clz32(m & -m);
+const par = t => t & 1;
 
+// Event-driven, like csim/bbm.c: a particle is a straight line (position at
+// its last event, direction) until its 2x2 block holds something else. Walls
+// are found by scanning three rows of a bitmap along the flight (two
+// orientations: rows of constant x - y for SE/NW movers, of constant x + y for
+// NE/SW), partners through an index on the coordinate two directions share.
 class World {
   constructor(U2, lo, hi) {
-    this.U2 = U2; this.lo = lo; this.hi = hi; this.V2 = hi - lo + 1;
-    this.S = this.V2 + 2 * PAD; this.N = U2 * this.S;
-    // occ: walls and moving balls (a ball never sits on a wall cell), so a lone
-    // ball's block is checked with 4 reads; wall is looked at only when needed
-    this.wall = new Int32Array((this.N >>> 5) + 2);
-    this.occ = new Int32Array((this.N >>> 5) + 2);
-    this.n = 0; this.t = 0; this.broken = false; this.cap = 0;
-    this.grow(4096);
+    this.U = U2 / 2; this.U2 = U2; this.lo = lo; this.hi = hi; this.V2 = hi - lo + 1; this.S = this.V2 + 2 * PAD;
+    this.RWU = (this.S >> 5) + 2; this.RWV = (U2 >> 5) + 2;
+    this.wu = new Int32Array(U2 * this.RWU);      // walls by row u2 = x + y, bit vv = x - y - lo + PAD
+    this.wv = new Int32Array(this.S * this.RWV);  // walls by row vv, bit u2
+    const U = this.U;
+    this.nb = Int32Array.of(U / 2 + 1, U / 2 + 1, U / 2 + 1, U / 2 + 1, (this.V2 >> 1) + 3, U + 1);
+    this.hoff = new Int32Array(7); this.boff = new Int32Array(7);  // offsets of each kind's buckets in head / nbm
+    for (let k = 0; k < 6; k++) { this.hoff[k + 1] = this.hoff[k] + this.nb[k]; this.boff[k + 1] = this.boff[k] + (this.nb[k] >> 5) + 1; }
+    this.head = new Int32Array(this.hoff[6]).fill(-1); this.nbm = new Int32Array(this.boff[6]);
+    this.top = 0; this.cap = 0; this.n = 0; this.freeHead = -1;
+    this.hn = 0; this.hcap = 4096; this.ht = new Int32Array(this.hcap); this.hid = new Int32Array(this.hcap); this.hver = new Int32Array(this.hcap);
+    this.grp = new Int32Array(64); this.tmp = new Int32Array(64); this.bxs = new Int32Array(64); this.bys = new Int32Array(64); this.t = 0; this.broken = false;
+    this.key = new Int32Array(3); this.wl = new Int32Array(4); this.mv = new Int32Array(4); this.to = new Int32Array(4);
+    this.origin = 0;  // absolute step of this world's time 0
+    this.grow(1024);
   }
 
   grow(cap) {
-    const re = a => { const b = new Int32Array(cap); if (a) b.set(a.subarray(0, Math.min(a.length, cap))); return b; };
-    this.p = re(this.p); this.pu = re(this.pu); this.pv = re(this.pv);
-    this.np = new Int32Array(cap); this.nu = new Int32Array(cap); this.nv = new Int32Array(cap);
+    const re = (a, T, fill) => { const b = new T(cap); if (fill !== undefined) b.fill(fill); if (a) b.set(a); return b; };
+    this.x = re(this.x, Int32Array); this.y = re(this.y, Int32Array); this.t0 = re(this.t0, Int32Array); this.ev = re(this.ev, Int32Array);
+    this.d = re(this.d, Int8Array); this.alive = re(this.alive, Uint8Array); this.ver = re(this.ver, Int32Array); this.mark = re(this.mark, Int32Array, -1);
+    const re3 = a => {  // three per-slot arrays in one: index j * cap + i
+      const b = new Int32Array(3 * cap);
+      if (a) for (let j = 0; j < 3; j++) b.set(a.subarray(j * this.cap, (j + 1) * this.cap), j * cap);
+      return b;
+    };
+    this.nxt = re3(this.nxt); this.prv = re3(this.prv); this.bk = re3(this.bk);
     this.cap = cap;
   }
 
-  index(x, y) {  // cell index, or -1 outside the band
+  addWall(u2, vv) {
+    this.wu[u2 * this.RWU + (vv >> 5)] |= 1 << (vv & 31);
+    this.wv[vv * this.RWV + (u2 >> 5)] |= 1 << (u2 & 31);
+  }
+
+  isWall(x, y) {
     const v = x - y;
-    if (v < this.lo || v > this.hi) return -1;
-    const u = ((x + y) % this.U2 + this.U2) % this.U2;
-    return u * this.S + (v - this.lo + PAD);
+    if (v < this.lo || v > this.hi) return 0;
+    const vv = v - this.lo + PAD;
+    return (this.wu[wrap(x + y, this.U2) * this.RWU + (vv >> 5)] >>> (vv & 31)) & 1;
   }
 
-  addWall(i) { this.wall[i >>> 5] |= 1 << (i & 31); this.occ[i >>> 5] |= 1 << (i & 31); }
-
-  add(i) {
-    if (i < 0 || bit(this.occ, i)) return;
-    if (this.n + 1 > this.cap) this.grow(2 * this.cap);
-    this.occ[i >>> 5] |= 1 << (i & 31);
-    this.p[this.n] = i; this.pu[this.n] = Math.floor(i / this.S); this.pv[this.n] = i % this.S; this.n++;
+  isWallV(x, y) {  // the same, from the other bitmap (hot after a SE/NW scan)
+    const v = x - y;
+    if (v < this.lo || v > this.hi) return 0;
+    const u2 = wrap(x + y, this.U2);
+    return (this.wv[(v - this.lo + PAD) * this.RWV + (u2 >> 5)] >>> (u2 & 31)) & 1;
   }
 
-  step() {
-    const o = this.t & 1, S = this.S, DX = S + 1, DY = S - 1, N = this.N, U2 = this.U2, lo = this.lo;
-    const occ = this.occ, wall = this.wall;
-    if (this.cap < 4 * this.n + 4) this.grow(4 * this.n + 4);
-    const p = this.p, pu = this.pu, pv = this.pv, np = this.np, nu = this.nu, nv = this.nv;
-    let m = 0;
-    for (let k = 0, n = this.n; k < n; k++) {
-      const i = p[k];
-      if (!((occ[i >>> 5] >>> (i & 31)) & 1)) continue;  // its block was already handled
-      const u2 = pu[k], vv = pv[k], v = vv - PAD + lo;
-      const rx = (((u2 + v) >> 1) - o) & 1, ry = (((u2 - v) >> 1) - o) & 1;
-      let c0 = i - rx * DX - ry * DY;
-      if (c0 < 0) c0 += N;
-      let c1 = c0 + DX, c2 = c0 + DY, c3 = c1 + DY;
-      if (c1 >= N) c1 -= N;
-      if (c2 >= N) c2 -= N;
-      if (c3 >= N) c3 -= N;
-      const f0 = (occ[c0 >>> 5] >>> (c0 & 31)) & 1, f1 = (occ[c1 >>> 5] >>> (c1 & 31)) & 1;
-      const f2 = (occ[c2 >>> 5] >>> (c2 & 31)) & 1, f3 = (occ[c3 >>> 5] >>> (c3 & 31)) & 1;
-      if (f0 + f1 + f2 + f3 === 1) {  // lone particle: to the opposite corner of its block
-        occ[i >>> 5] &= ~(1 << (i & 31));
-        const dx = 1 - 2 * rx, dy = 1 - 2 * ry;
-        let j = i + dx * DX + dy * DY, cu = u2 + dx + dy;
-        if (j < 0) j += N; else if (j >= N) j -= N;
-        if (cu < 0) cu += U2; else if (cu >= U2) cu -= U2;
-        np[m] = j; nu[m] = cu; nv[m] = vv + dx - dy; m++;
-        continue;
+  static scanFwd(a, o0, o1, o2, p, nw) {  // first set bit >= p in the OR of three rows, or -1
+    let i = p >> 5;
+    if (i >= nw) return -1;
+    let m = (a[o0 + i] | a[o1 + i] | a[o2 + i]) & (-1 << (p & 31));
+    while (!m) { if (++i >= nw) return -1; m = a[o0 + i] | a[o1 + i] | a[o2 + i]; }
+    return i * 32 + ctz(m);
+  }
+
+  static scanBwd(a, o0, o1, o2, p) {  // last set bit <= p, or -1
+    if (p < 0) return -1;
+    let i = p >> 5;
+    let m = (a[o0 + i] | a[o1 + i] | a[o2 + i]) & (-1 >>> (31 - (p & 31)));
+    while (!m) { if (--i < 0) return -1; m = a[o0 + i] | a[o1 + i] | a[o2 + i]; }
+    return i * 32 + 31 - Math.clz32(m);
+  }
+
+  wallSteps(i) {  // steps until particle i's block first holds a wall, or it steps out of the band
+    const x = this.x[i], y = this.y[i], u2 = wrap(x + y, this.U2), vv = x - y - this.lo + PAD, d = this.d[i], U2 = this.U2;
+    if (d === 0 || d === 3) {
+      const o0 = (vv - 1) * this.RWV, o1 = o0 + this.RWV, o2 = o1 + this.RWV, nw = (U2 + 31) >> 5, wv = this.wv;
+      let q;
+      if (d === 0) {
+        q = World.scanFwd(wv, o0, o1, o2, u2 + 1, nw);
+        if (q >= U2) q = -1;
+        if (q < 0) q = World.scanFwd(wv, o0, o1, o2, 0, nw);
+        if (q < 0 || q >= U2) return INF;
+        return (wrap(q - u2, U2) - 1) >> 1;
       }
-      const w0 = (wall[c0 >>> 5] >>> (c0 & 31)) & 1, w1 = (wall[c1 >>> 5] >>> (c1 & 31)) & 1;
-      const w2 = (wall[c2 >>> 5] >>> (c2 & 31)) & 1, w3 = (wall[c3 >>> 5] >>> (c3 & 31)) & 1;
-      const m0 = f0 & ~w0, m1 = f1 & ~w1, m2 = f2 & ~w2, m3 = f3 & ~w3;
-      let g0 = f0, g1 = f1, g2 = f2, g3 = f3;  // 2 on a diagonal: the other diagonal; else unchanged
-      if (f0 + f1 + f2 + f3 === 2) {
-        if (f0 && f3) { g0 = 0; g3 = 0; g1 = 1; g2 = 1; }
-        else if (f1 && f2) { g1 = 0; g2 = 0; g0 = 1; g3 = 1; }
-      }
-      if (m0) occ[c0 >>> 5] &= ~(1 << (c0 & 31));
-      if (m1) occ[c1 >>> 5] &= ~(1 << (c1 & 31));
-      if (m2) occ[c2 >>> 5] &= ~(1 << (c2 & 31));
-      if (m3) occ[c3 >>> 5] &= ~(1 << (c3 & 31));
-      if ((w0 && !g0) || (w1 && !g1) || (w2 && !g2) || (w3 && !g3)) this.broken = true;
-      let tu = u2 - rx - ry;  // the block's top-left corner, in (x + y, x - y + PAD - lo)
-      const tv = vv - rx + ry;
-      if (tu < 0) tu += U2;
-      const tu1 = tu + 1 >= U2 ? tu + 1 - U2 : tu + 1, tu2 = tu + 2 >= U2 ? tu + 2 - U2 : tu + 2;
-      if (g0 && !w0) { np[m] = c0; nu[m] = tu; nv[m] = tv; m++; }
-      if (g1 && !w1) { np[m] = c1; nu[m] = tu1; nv[m] = tv + 1; m++; }
-      if (g2 && !w2) { np[m] = c2; nu[m] = tu1; nv[m] = tv - 1; m++; }
-      if (g3 && !w3) { np[m] = c3; nu[m] = tu2; nv[m] = tv; m++; }
+      q = World.scanBwd(wv, o0, o1, o2, u2 - 1);
+      if (q < 0) q = World.scanBwd(wv, o0, o1, o2, U2 - 1);
+      if (q < 0) return INF;
+      return (wrap(u2 - q, U2) - 1) >> 1;
     }
-    let kept = 0;  // write the new positions; drop those in the padding (sinks)
-    const vmax = PAD + this.V2;
-    for (let k = 0; k < m; k++) {
-      const q = np[k];
-      if (nv[k] < PAD || nv[k] >= vmax) continue;
-      occ[q >>> 5] |= 1 << (q & 31);
-      np[kept] = q; nu[kept] = nu[k]; nv[kept] = nv[k]; kept++;
+    const ua = u2 ? u2 - 1 : U2 - 1, ub = u2 + 1 === U2 ? 0 : u2 + 1, R = this.RWU, wu = this.wu;
+    if (d === 2) {
+      const exit = (this.hi - (x - y)) >> 1, q = World.scanFwd(wu, ua * R, u2 * R, ub * R, vv + 1, R);
+      return q < 0 ? exit : Math.min(exit, (q - vv - 1) >> 1);
     }
-    this.p = np; this.np = p; this.pu = nu; this.nu = pu; this.pv = nv; this.nv = pv;
-    this.n = kept; this.t++;
+    const exit = ((x - y) - this.lo) >> 1, q = World.scanBwd(wu, ua * R, u2 * R, ub * R, vv - 1);
+    return q < 0 ? exit : Math.min(exit, (vv - q - 1) >> 1);
   }
 
-  cells(out, off) {  // append (x + y, x - y - lo) of every moving cell as uint16 pairs
-    for (let k = 0; k < this.n; k++) { out[off++] = this.pu[k]; out[off++] = this.pv[k] - PAD; }
+  hpush(t, id) {
+    if (this.hn === this.hcap) {
+      this.hcap *= 2;
+      const ht = new Int32Array(this.hcap), hid = new Int32Array(this.hcap), hver = new Int32Array(this.hcap);
+      ht.set(this.ht); hid.set(this.hid); hver.set(this.hver); this.ht = ht; this.hid = hid; this.hver = hver;
+    }
+    const ht = this.ht, hid = this.hid, hver = this.hver;
+    let k = this.hn++;
+    while (k > 0) {
+      const p = (k - 1) >> 1;
+      if (ht[p] <= t) break;
+      ht[k] = ht[p]; hid[k] = hid[p]; hver[k] = hver[p]; k = p;
+    }
+    ht[k] = t; hid[k] = id; hver[k] = this.ver[id];
+  }
+
+  hpop() {
+    const n = --this.hn, ht = this.ht, hid = this.hid, hver = this.hver;
+    if (!n) return;
+    const t = ht[n], id = hid[n], ver = hver[n];
+    let k = 0;
+    while (true) {
+      let c = 2 * k + 1;
+      if (c >= n) break;
+      if (c + 1 < n && ht[c + 1] < ht[c]) c++;
+      if (ht[c] >= t) break;
+      ht[k] = ht[c]; hid[k] = hid[c]; hver[k] = hver[c]; k = c;
+    }
+    ht[k] = t; hid[k] = id; hver[k] = ver;
+  }
+
+  keysOf(i, key) {
+    const x = this.x[i], y = this.y[i], U = this.U, tm = wrap(this.t0[i] % U, U), k0 = 3 * this.d[i];
+    for (let j = 0; j < 3; j++) {
+      switch (KIND[k0 + j]) {
+        case 0: key[j] = wrap(x - tm, U); break;
+        case 1: key[j] = wrap(y - tm, U); break;
+        case 2: key[j] = wrap(x + tm, U); break;
+        case 3: key[j] = wrap(y + tm, U); break;
+        case 4: key[j] = x - y - this.lo; break;
+        default: key[j] = wrap(x + y, this.U2);
+      }
+    }
+  }
+
+  indexAdd(i, key) {
+    const head = this.head, nbm = this.nbm, nxt = this.nxt, prv = this.prv, bk = this.bk, cap = this.cap, k0 = 3 * this.d[i];
+    for (let j = 0; j < 3; j++) {
+      const kind = KIND[k0 + j], b = key[j] >> 1, hb = this.hoff[kind] + b, h = head[hb], o = j * cap;
+      bk[o + i] = b; prv[o + i] = -1; nxt[o + i] = h;
+      if (h >= 0) prv[o + h] = i;
+      head[hb] = i;
+      nbm[this.boff[kind] + (b >> 5)] |= 1 << (b & 31);
+    }
+  }
+
+  indexDel(i) {
+    const head = this.head, nxt = this.nxt, prv = this.prv, cap = this.cap, k0 = 3 * this.d[i];
+    for (let j = 0; j < 3; j++) {
+      const kind = KIND[k0 + j], o = j * cap, p = prv[o + i], n = nxt[o + i], b = this.bk[o + i];
+      if (p >= 0) nxt[o + p] = n;
+      else { head[this.hoff[kind] + b] = n; if (n < 0) this.nbm[this.boff[kind] + (b >> 5)] &= ~(1 << (b & 31)); }
+      if (n >= 0) prv[o + n] = p;
+    }
+  }
+
+  static sameBlock(t, xa, ya, xb, yb) {
+    const o = par(t);
+    return ((xa - o) >> 1) === ((xb - o) >> 1) && ((ya - o) >> 1) === ((yb - o) >> 1);
+  }
+
+  // tau + s if i (at xi, yi, moving dxi, dyi at tau) and j (shifted by -k laps) share a block at step tau + s
+  static tryStep(tau, s, k, U, xi, yi, dxi, dyi, xj, yj, dxj, dyj) {
+    if (s < 0) return INF;
+    return World.sameBlock(tau + s, xi + dxi * s, yi + dyi * s, xj + dxj * s - k * U, yj + dyj * s - k * U) ? tau + s : INF;
+  }
+
+  // earliest step >= both particles' times at which i and j share a block (flying freely until then), or INF
+  meet(i, j) {
+    const U = this.U, ti = this.t0[i], tj = this.t0[j], tau = Math.max(ti, tj), di = this.d[i], dj = this.d[j];
+    const dxi = DX[di], dyi = DY[di], dxj = DX[dj], dyj = DY[dj];
+    const xi = this.x[i] + dxi * (tau - ti), yi = this.y[i] + dyi * (tau - ti), xj = this.x[j] + dxj * (tau - tj), yj = this.y[j] + dyj * (tau - tj);
+    const Dx = xi - xj, Dy = yi - yj, vx = dxi - dxj, vy = dyi - dyj;
+    let best = INF;
+    if (vx === 0 && vy === 0) {  // same direction: fixed offset; a shared block now or at the other parity
+      let k = 0, r = Dx;
+      while (r > U / 2) { r -= U; k--; }
+      while (r < -U / 2) { r += U; k++; }
+      if (Dx + k * U > 1 || Dx + k * U < -1 || Dy + k * U > 1 || Dy + k * U < -1) return INF;
+      best = World.tryStep(tau, 0, k, U, xi, yi, dxi, dyi, xj, yj, dxj, dyj);
+      return best !== INF ? best : World.tryStep(tau, 1, k, U, xi, yi, dxi, dyi, xj, yj, dxj, dyj);
+    }
+    if (vx === 0 || vy === 0) {  // perpendicular: the shared coordinate fixes the wrap, the other the step
+      const Df = vx === 0 ? Dx : Dy, Dm = vx === 0 ? Dy : Dx, vm = vx === 0 ? vy : vx;
+      let k = 0, r = Df;
+      while (r > U / 2) { r -= U; k--; }
+      while (r < -U / 2) { r += U; k++; }
+      if (Df + k * U > 1 || Df + k * U < -1) return INF;
+      for (let wv = -1; wv <= 1; wv++) {
+        const num = wv - Dm - k * U;
+        if (num & 1) continue;
+        const t = World.tryStep(tau, num / vm, k, U, xi, yi, dxi, dyi, xj, yj, dxj, dyj);
+        if (t < best) best = t;
+      }
+      return best;
+    }
+    for (let wx = -1; wx <= 1; wx++) {  // head on: the first lap at which x lines up, then y must too
+      const num = wx - Dx;
+      if (num & 1) continue;
+      let k = 0, r = num;
+      if (vx > 0) { while (r < 0) { r += U; k--; } while (r >= U) { r -= U; k++; } }
+      else { while (r > 0) { r -= U; k++; } while (r <= -U) { r += U; k--; } }
+      for (let lap = 0; lap <= (U % 4 ? 1 : 0); lap++, k += vx > 0 ? -1 : 1) {
+        const s = (num - k * U) / vx, yy = Dy + k * U + vy * s;
+        if (yy <= 1 && yy >= -1) { const t = World.tryStep(tau, s, k, U, xi, yi, dxi, dyi, xj, yj, dxj, dyj); if (t < best) best = t; }
+      }
+    }
+    return best;
+  }
+
+  schedule(i) {  // next event of i from its (x, y, t0, d); lowers partners' events as needed
+    const ws = this.wallSteps(i), key = this.key, d = this.d[i], dd = this.d, nxt = this.nxt, cap = this.cap, ev = this.ev;
+    let best = ws === INF ? INF : this.t0[i] + ws;
+    this.keysOf(i, key);
+    for (let j = 0; j < 3; j++) {
+      const kind = KIND[3 * d + j], nb = this.nb[kind], range = kind >= 4 ? 2 : 1, ho = this.hoff[kind], bo = this.boff[kind];
+      let prevb = -1;
+      for (let dk = -range; dk <= range; dk++) {
+        let kk = key[j] + dk;
+        if (kind === 4) { if (kk < 0 || kk >= this.V2) continue; }
+        else kk = wrap(kk, kind === 5 ? this.U2 : this.U);
+        const b = kk >> 1;
+        if (b === prevb || b >= nb) continue;
+        prevb = b;
+        if (!((this.nbm[bo + (b >> 5)] >>> (b & 31)) & 1)) continue;
+        for (let c = this.head[ho + b]; c >= 0; c = nxt[SLOT[6 * dd[c] + kind] * cap + c]) {
+          if (c === i || (kind < 4 && dd[c] === d)) continue;
+          const t = this.meet(i, c);
+          if (t === INF) continue;
+          if (t < best) best = t;
+          if (t < ev[c]) { ev[c] = t; this.hpush(t, c); }
+        }
+      }
+    }
+    this.indexAdd(i, key);
+    this.ev[i] = best;
+    if (best !== INF) this.hpush(best, i);
+  }
+
+  setDir(i) {
+    const o = par(this.t0[i]);
+    this.d[i] = ((this.x[i] - o) & 1) + 2 * ((this.y[i] - o) & 1);
+  }
+
+  canon(i) {
+    while (this.x[i] + this.y[i] < 0) { this.x[i] += this.U; this.y[i] += this.U; }
+    while (this.x[i] + this.y[i] >= this.U2) { this.x[i] -= this.U; this.y[i] -= this.U; }
+  }
+
+  occupied(x, y, t) {  // is cell (x, y) occupied at step t (all events before t done)?
+    const v = x - y, u2 = wrap(x + y, this.U2);
+    for (let i = 0; i < this.top; i++) {
+      if (!this.alive[i]) continue;
+      const dt = t - this.t0[i], xi = this.x[i] + DX[this.d[i]] * dt, yi = this.y[i] + DY[this.d[i]] * dt;
+      if (xi - yi === v && wrap(xi + yi, this.U2) === u2) return 1;
+    }
+    return 0;
+  }
+
+  add(x, y, t) {  // a particle at (x, y) before step t (t = this.t for fresh ones)
+    const v = x - y;
+    if (v < this.lo || v > this.hi || this.isWall(x, y) || this.occupied(x, y, t)) return;
+    let i;
+    if (this.freeHead >= 0) { i = this.freeHead; this.freeHead = this.nxt[i]; }
+    else { if (this.top === this.cap) this.grow(2 * this.cap); i = this.top++; }
+    this.x[i] = x; this.y[i] = y; this.t0[i] = t; this.alive[i] = 1; this.n++;
+    this.canon(i); this.setDir(i);
+    this.schedule(i);
+  }
+
+  processBlock(T, ids, m) {
+    const o = par(T), i0 = ids[0], vmaj = this.d[i0] === 0 || this.d[i0] === 3;
+    let x0 = this.x[i0] + DX[this.d[i0]] * (T - this.t0[i0]), y0 = this.y[i0] + DY[this.d[i0]] * (T - this.t0[i0]);
+    x0 -= (x0 - o) & 1; y0 -= (y0 - o) & 1;
+    while (x0 + y0 < 0) { x0 += this.U; y0 += this.U; }
+    while (x0 + y0 >= this.U2) { x0 -= this.U; y0 -= this.U; }
+    const wl = this.wl, mv = this.mv, to = this.to;
+    for (let c = 0; c < 4; c++) {
+      wl[c] = vmaj ? this.isWallV(x0 + (c & 1), y0 + (c >> 1)) : this.isWall(x0 + (c & 1), y0 + (c >> 1));
+      mv[c] = -1; to[c] = c;
+    }
+    for (let q = 0; q < m; q++) {
+      const i = ids[q], dt = T - this.t0[i], x = this.x[i] + DX[this.d[i]] * dt, y = this.y[i] + DY[this.d[i]] * dt;
+      mv[((x - o) & 1) + 2 * ((y - o) & 1)] = i;
+    }
+    const f0 = wl[0] | (mv[0] >= 0), f1 = wl[1] | (mv[1] >= 0), f2 = wl[2] | (mv[2] >= 0), f3 = wl[3] | (mv[3] >= 0), cnt = f0 + f1 + f2 + f3;
+    if (cnt === 1) { to[0] = 3; to[1] = 2; to[2] = 1; to[3] = 0; }
+    else if (cnt === 2 && f0 && f3) { to[0] = 1; to[3] = 2; }
+    else if (cnt === 2 && f1 && f2) { to[1] = 0; to[2] = 3; }
+    for (let c = 0; c < 4; c++) if (wl[c] && to[c] !== c) this.broken = true;
+    for (let c = 0; c < 4; c++) {
+      const i = mv[c];
+      if (i < 0) continue;
+      this.indexDel(i); this.ver[i]++;
+      this.x[i] = x0 + (to[c] & 1); this.y[i] = y0 + (to[c] >> 1); this.t0[i] = T + 1;
+      this.canon(i); this.setDir(i);
+    }
+    for (let c = 0; c < 4; c++) {
+      const i = mv[c];
+      if (i < 0) continue;
+      const v = this.x[i] - this.y[i];
+      if (v < this.lo || v > this.hi) { this.alive[i] = 0; this.n--; this.ver[i]++; this.nxt[i] = this.freeHead; this.freeHead = i; }
+      else this.schedule(i);
+    }
+  }
+
+  runTo(tEnd) {  // run all events at steps < tEnd
+    const grp = this.grp, tmp = this.tmp, bx = this.bxs, by = this.bys, X = this.x, Y = this.y, T0 = this.t0, D = this.d, U = this.U, U2 = this.U2;
+    while (this.hn && this.ht[0] < tEnd) {
+      const T = this.ht[0], o = par(T);
+      let m = 0;
+      while (this.hn && this.ht[0] === T) {  // every live event at this step
+        const id = this.hid[0], ver = this.hver[0];
+        this.hpop();
+        if (!this.alive[id] || ver !== this.ver[id] || this.mark[id] === T) continue;
+        this.mark[id] = T;
+        if (m === grp.length) { this.grp = new Int32Array(2 * m); this.grp.set(grp); this.bxs = new Int32Array(2 * m); this.bys = new Int32Array(2 * m); this.tmp = new Int32Array(2 * m); return this.runToResume(tEnd, T, m, grp); }
+        grp[m] = id;
+        let xa = X[id] + DX[D[id]] * (T - T0[id]), ya = Y[id] + DY[D[id]] * (T - T0[id]);  // its block's corner
+        xa -= (xa - o) & 1; ya -= (ya - o) & 1;
+        while (xa + ya < 0) { xa += U; ya += U; }
+        while (xa + ya >= U2) { xa -= U; ya -= U; }
+        bx[m] = xa; by[m] = ya; m++;
+      }
+      for (let q = 0; q < m; q++) {  // group by block
+        if (grp[q] < 0) continue;
+        let n = 0;
+        tmp[n++] = grp[q]; grp[q] = -1;
+        for (let r = q + 1; r < m; r++)
+          if (grp[r] >= 0 && bx[r] === bx[q] && by[r] === by[q]) { tmp[n++] = grp[r]; grp[r] = -1; }
+        this.processBlock(T, tmp, n);
+      }
+    }
+    this.t = tEnd;
+  }
+
+  runToResume(tEnd, T, m, grp) {  // the scratch arrays just grew mid-step: put the popped ids back and go on
+    for (let q = 0; q < m; q++) { this.mark[grp[q]] = -1; this.hpush(T, grp[q]); }
+    return this.runTo(tEnd);
+  }
+
+  // Make absolute step T the new time 0 (or 1, keeping the step parity), move
+  // every particle's reference point there and re-index (keys depend on t);
+  // the lines and events are unchanged. Returns T in the new time. This keeps
+  // every time and position a small integer.
+  rebase(T) {
+    const c = T - this.origin, sh = c - (c & 1), key = this.key;
+    this.origin += sh;
+    for (let i = 0; i < this.top; i++) {
+      if (!this.alive[i]) continue;
+      const dt = c - this.t0[i];
+      this.indexDel(i);
+      this.x[i] += DX[this.d[i]] * dt; this.y[i] += DY[this.d[i]] * dt; this.t0[i] = c - sh;
+      this.canon(i);
+      if (this.ev[i] !== INF) this.ev[i] -= sh;
+      this.mark[i] = -1;
+      this.keysOf(i, key); this.indexAdd(i, key);
+    }
+    for (let k = 0; k < this.hn; k++) this.ht[k] -= sh;
+    this.t -= sh;
+    return c - sh;
+  }
+
+  cells(out, off, t) {  // append (x + y, x - y - lo) of every particle at step t as uint16 pairs
+    for (let i = 0; i < this.top; i++) {
+      if (!this.alive[i]) continue;
+      const dt = t - this.t0[i], x = this.x[i] + DX[this.d[i]] * dt, y = this.y[i] + DY[this.d[i]] * dt;
+      out[off++] = wrap(x + y, this.U2); out[off++] = x - y - this.lo;
+    }
     return off;
   }
 }
@@ -119,20 +402,17 @@ class Machine {
     this.meta = meta; this.P = meta.P;
     for (let j = 0, u = 0; j < squares.length; j += 2) {  // each wall square: 4 cells from its centre
       u += squares[j];
-      const v = squares[j + 1] + meta.lo, a = u - 1;  // top-left cell has x + y = u - 1
-      for (const [du, dv] of [[0, 0], [1, 1], [1, -1], [2, 0]]) {
-        const uu = (a + du + meta.U2) % meta.U2;
-        w.addWall(uu * w.S + (v + dv - meta.lo + PAD));
-      }
+      const vv = squares[j + 1] + PAD, a = u - 1;  // top-left cell has x + y = u - 1
+      for (const [du, dv] of [[0, 0], [1, 1], [1, -1], [2, 0]]) w.addWall((a + du + meta.U2) % meta.U2, vv + dv);
     }
     const sc = meta.sched;
-    this.ft = Int32Array.from(sc, e => e[0]); this.fi = Int32Array.from(sc, e => w.index(e[1], e[2]));
+    this.ft = Int32Array.from(sc, e => e[0]); this.fx = Int32Array.from(sc, e => e[1]); this.fy = Int32Array.from(sc, e => e[2]);
     this.fg = Int8Array.from(sc, e => e[3]);
     const rs = [];
     for (const [name, [t, cells]] of Object.entries(meta.reads))
-      for (const [x, y] of cells) rs.push([t, w.index(x, y), name]);
+      for (const [x, y] of cells) rs.push([t, x, y, name]);
     rs.sort((a, b) => a[0] - b[0]);
-    this.rt = Int32Array.from(rs, e => e[0]); this.ri = Int32Array.from(rs, e => e[1]); this.rn = rs.map(e => e[2]);
+    this.rt = Int32Array.from(rs, e => e[0]); this.rx = Int32Array.from(rs, e => e[1]); this.ry = Int32Array.from(rs, e => e[2]); this.rn = rs.map(e => e[3]);
     this.n = 0; w.t = meta.t_lo;
   }
 
@@ -140,19 +420,25 @@ class Machine {
   // relative to the frame's start, sorted, K <= T): the cells after each of
   // the K steps up to T are returned like web.py's pictures.
   frame(inp, traces = []) {
-    const w = this.w, start = this.meta.t_lo + this.n * this.P, end = start + this.P, gate = [1, inp.left, inp.right, inp.reset];
+    const w = this.w, start = w.rebase(this.meta.t_lo + this.n * this.P), end = start + this.P, gate = [1, inp.left, inp.right, inp.reset];
     const counts = {}, pics = traces.map(([T, K]) => ({ ph: T, counts: [], raw: new Uint16Array(2 * K * (w.n + 2000)), off: 0, K }));
     let fi = 0, ri = 0, ti = 0;
     const nf = this.ft.length, nr = this.rt.length;
-    for (let t = start; t < end; t++) {
-      for (; fi < nf && this.ft[fi] + start === t; fi++) if (gate[this.fg[fi]]) w.add(this.fi[fi]);
-      for (; ri < nr && this.rt[ri] + start === t; ri++) counts[this.rn[ri]] = (counts[this.rn[ri]] || 0) + bit(w.occ, this.ri[ri]);
-      w.step();
-      for (let j = ti; j < pics.length && pics[j].ph - pics[j].K < t + 1 - start; j++) {
+    while (true) {  // the times anything happens from outside: feeds, reads, recorded steps
+      let t = end;
+      if (fi < nf && this.ft[fi] + start < t) t = this.ft[fi] + start;
+      if (ri < nr && this.rt[ri] + start < t) t = this.rt[ri] + start;
+      while (ti < pics.length && pics[ti].ph + start < t) ti++;
+      if (ti < pics.length && pics[ti].ph - pics[ti].K + 1 + start < t) t = Math.max(w.t + 1, pics[ti].ph - pics[ti].K + 1 + start);
+      w.runTo(t);
+      if (t === end) break;
+      for (; fi < nf && this.ft[fi] + start === t; fi++) if (gate[this.fg[fi]]) w.add(this.fx[fi], this.fy[fi], t);
+      for (; ri < nr && this.rt[ri] + start === t; ri++) counts[this.rn[ri]] = (counts[this.rn[ri]] || 0) + w.occupied(this.rx[ri], this.ry[ri], t);
+      for (let j = ti; j < pics.length && pics[j].ph - pics[j].K + start < t; j++) {
         const q = pics[j];
-        if (t + 1 - start > q.ph) { ti = j + 1; continue; }
+        if (t > q.ph + start) continue;
         if (q.off + 2 * w.n > q.raw.length) { const b = new Uint16Array(2 * q.raw.length + 2 * w.n); b.set(q.raw); q.raw = b; }
-        q.counts.push(w.n); q.off = w.cells(q.raw, q.off);
+        q.counts.push(w.n); q.off = w.cells(q.raw, q.off, t);
       }
     }
     if (w.broken) throw new Error('a wall moved: the machine is broken');
