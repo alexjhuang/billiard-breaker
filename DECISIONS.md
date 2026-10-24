@@ -219,3 +219,15 @@ tiles against 518 k real), and event density varies 1.4-1.75x between tiles.
 Shorter epochs shrink the margin but multiply the barriers (2232 at D = 32).
 Not tried: cutting by predicted events instead of ball counts; re-cutting
 every epoch with a cell set to find migrated balls.
+
+## 2026-10-24 — GPU scans fetch the block's wall cells in the same round trip
+A direction change used to cost two serialized memory latencies on the GPU:
+the corridor scan, then four dependent loads for the wall cells of the block
+it found. Those cells always lie in the three scanned rows within one word of
+the hit, so the scan now fetches the neighbouring words as it goes (six loads
+an iteration instead of three, issued together) and the cells come from
+registers; only a block across the loop's seam or at the band's edge falls
+back to direct loads. Exact (tests/test_gpu.py). Unmeasured on real
+hardware: SwiftShader got slower (54 s a frame from 33) because it pays for
+every load on the CPU, whereas a GPU pays for latency, which this halves per
+event. If a real GPU disagrees, revert this entry's commit.

@@ -91,77 +91,154 @@ fn iswall(x: i32, y: i32) -> u32 {  // any representative
 
 fn ctz(m: u32) -> u32 { return countTrailingZeros(m); }
 
-// first set bit at position >= p in three rows of wv (nw words), or -1
-fn scanFwdV(r0: i32, r1: i32, r2: i32, p: i32, nw: i32) -> i32 {
+// A scan along three rows of a bitmap, from bit p in direction dir (+1/-1):
+// the first set bit q, and the words around it (rows x {i-1, i, i+1}) so the
+// wall cells of the block the ball will then be in come without another
+// round trip to memory. Words are fetched in pairs as the scan goes, so the
+// whole scan is one memory latency per word visited.
+struct Scan { q: i32, i: i32, w: array<u32, 9> }  // w[3r + 0..2] = row r at words i-1, i, i+1
+
+fn scanV(r0: i32, r1: i32, r2: i32, p: i32, dir: i32, nw: i32) -> Scan {
+  var sc: Scan;
+  sc.q = -1;
   var i = p >> 5;
-  if (i >= nw) { return -1; }
-  var m = (wv[u32(r0 + i)] | wv[u32(r1 + i)] | wv[u32(r2 + i)]) & (0xffffffffu << u32(p & 31));
-  loop { if (m != 0u) { break; } i++; if (i >= nw) { return -1; } m = wv[u32(r0 + i)] | wv[u32(r1 + i)] | wv[u32(r2 + i)]; }
-  return i * 32 + i32(ctz(m));
-}
-fn scanBwdV(r0: i32, r1: i32, r2: i32, p: i32) -> i32 {
-  if (p < 0) { return -1; }
-  var i = p >> 5;
-  var m = (wv[u32(r0 + i)] | wv[u32(r1 + i)] | wv[u32(r2 + i)]) & (0xffffffffu >> u32(31 - (p & 31)));
-  loop { if (m != 0u) { break; } i--; if (i < 0) { return -1; } m = wv[u32(r0 + i)] | wv[u32(r1 + i)] | wv[u32(r2 + i)]; }
-  return i * 32 + 31 - i32(countLeadingZeros(m));
-}
-fn scanFwdU(r0: i32, r1: i32, r2: i32, p: i32, nw: i32) -> i32 {
-  var i = p >> 5;
-  if (i >= nw) { return -1; }
-  var m = (wu[u32(r0 + i)] | wu[u32(r1 + i)] | wu[u32(r2 + i)]) & (0xffffffffu << u32(p & 31));
-  loop { if (m != 0u) { break; } i++; if (i >= nw) { return -1; } m = wu[u32(r0 + i)] | wu[u32(r1 + i)] | wu[u32(r2 + i)]; }
-  return i * 32 + i32(ctz(m));
-}
-fn scanBwdU(r0: i32, r1: i32, r2: i32, p: i32) -> i32 {
-  if (p < 0) { return -1; }
-  var i = p >> 5;
-  var m = (wu[u32(r0 + i)] | wu[u32(r1 + i)] | wu[u32(r2 + i)]) & (0xffffffffu >> u32(31 - (p & 31)));
-  loop { if (m != 0u) { break; } i--; if (i < 0) { return -1; } m = wu[u32(r0 + i)] | wu[u32(r1 + i)] | wu[u32(r2 + i)]; }
-  return i * 32 + 31 - i32(countLeadingZeros(m));
+  if (i < 0 || i >= nw) { return sc; }
+  var ia = i - dir; if (ia < 0) { ia += nw; } if (ia >= nw) { ia -= nw; }   // the word behind us, kept as we move on
+  var a0 = wv[u32(r0 + ia)]; var a1 = wv[u32(r1 + ia)]; var a2 = wv[u32(r2 + ia)];
+  var b0 = wv[u32(r0 + i)]; var b1 = wv[u32(r1 + i)]; var b2 = wv[u32(r2 + i)];
+  var m = b0 | b1 | b2;
+  if (dir > 0) { m &= 0xffffffffu << u32(p & 31); } else { m &= 0xffffffffu >> u32(31 - (p & 31)); }
+  loop {
+    if (m != 0u) { break; }
+    i += dir;
+    if (i < 0 || i >= nw) { return sc; }
+    a0 = b0; a1 = b1; a2 = b2;
+    b0 = wv[u32(r0 + i)]; b1 = wv[u32(r1 + i)]; b2 = wv[u32(r2 + i)];
+    m = b0 | b1 | b2;
+  }
+  var ib = i + dir; if (ib < 0) { ib += nw; } if (ib >= nw) { ib -= nw; }
+  let c0 = wv[u32(r0 + ib)]; let c1 = wv[u32(r1 + ib)]; let c2 = wv[u32(r2 + ib)];
+  sc.i = i;
+  if (dir > 0) { sc.q = i * 32 + i32(ctz(m)); } else { sc.q = i * 32 + 31 - i32(countLeadingZeros(m)); }
+  if (dir > 0) { sc.w[0] = a0; sc.w[1] = b0; sc.w[2] = c0; sc.w[3] = a1; sc.w[4] = b1; sc.w[5] = c1; sc.w[6] = a2; sc.w[7] = b2; sc.w[8] = c2; }
+  else { sc.w[0] = c0; sc.w[1] = b0; sc.w[2] = a0; sc.w[3] = c1; sc.w[4] = b1; sc.w[5] = a1; sc.w[6] = c2; sc.w[7] = b2; sc.w[8] = a2; }
+  return sc;
 }
 
-// steps until the block in front of a ball at (x, y) moving (dx, dy) holds a wall, or it leaves the band
-fn wallSteps(x: i32, y: i32, dx: i32, dy: i32) -> i32 {
-  let u2 = wrapi(x + y, u.U2);
-  let vv = x - y - u.lo + PAD;
-  if (dx == dy) {  // SE / NW: along a row of constant v, round the loop
-    let r0 = (vv - 1) * u.RWV; let r1 = r0 + u.RWV; let r2 = r1 + u.RWV;
-    let nw = (u.U2 + 31) >> 5;
-    if (dx > 0) {
-      var q = scanFwdV(r0, r1, r2, u2 + 1, nw);
-      if (q >= u.U2) { q = -1; }
-      if (q < 0) { q = scanFwdV(r0, r1, r2, 0, nw); }
-      if (q < 0 || q >= u.U2) { return INF; }
-      return (wrapi(q - u2, u.U2) - 1) >> 1;
-    }
-    var q = scanBwdV(r0, r1, r2, u2 - 1);
-    if (q < 0) { q = scanBwdV(r0, r1, r2, u.U2 - 1); }
-    if (q < 0) { return INF; }
-    return (wrapi(u2 - q, u.U2) - 1) >> 1;
+fn scanU(r0: i32, r1: i32, r2: i32, p: i32, dir: i32, nw: i32) -> Scan {
+  var sc: Scan;
+  sc.q = -1;
+  var i = p >> 5;
+  if (i < 0 || i >= nw) { return sc; }
+  var ia = clamp(i - dir, 0, nw - 1);
+  var a0 = wu[u32(r0 + ia)]; var a1 = wu[u32(r1 + ia)]; var a2 = wu[u32(r2 + ia)];
+  var b0 = wu[u32(r0 + i)]; var b1 = wu[u32(r1 + i)]; var b2 = wu[u32(r2 + i)];
+  var m = b0 | b1 | b2;
+  if (dir > 0) { m &= 0xffffffffu << u32(p & 31); } else { m &= 0xffffffffu >> u32(31 - (p & 31)); }
+  loop {
+    if (m != 0u) { break; }
+    i += dir;
+    if (i < 0 || i >= nw) { return sc; }
+    a0 = b0; a1 = b1; a2 = b2;
+    b0 = wu[u32(r0 + i)]; b1 = wu[u32(r1 + i)]; b2 = wu[u32(r2 + i)];
+    m = b0 | b1 | b2;
   }
-  var ua = u2 - 1; if (ua < 0) { ua = u.U2 - 1; }
-  var ub = u2 + 1; if (ub == u.U2) { ub = 0; }
-  let R = u.RWU;
-  if (dy < 0) {  // NE: v rises
-    let ex = (u.hi - (x - y)) >> 1;
-    let q = scanFwdU(ua * R, u2 * R, ub * R, vv + 1, R);
-    if (q < 0) { return ex; }
-    return min(ex, (q - vv - 1) >> 1);
-  }
-  let ex = ((x - y) - u.lo) >> 1;  // SW
-  let q = scanBwdU(ua * R, u2 * R, ub * R, vv - 1);
-  if (q < 0) { return ex; }
-  return min(ex, (vv - q - 1) >> 1);
+  let ib = clamp(i + dir, 0, nw - 1);
+  let c0 = wu[u32(r0 + ib)]; let c1 = wu[u32(r1 + ib)]; let c2 = wu[u32(r2 + ib)];
+  sc.i = i;
+  if (dir > 0) { sc.q = i * 32 + i32(ctz(m)); } else { sc.q = i * 32 + 31 - i32(countLeadingZeros(m)); }
+  if (dir > 0) { sc.w[0] = a0; sc.w[1] = b0; sc.w[2] = c0; sc.w[3] = a1; sc.w[4] = b1; sc.w[5] = c1; sc.w[6] = a2; sc.w[7] = b2; sc.w[8] = c2; }
+  else { sc.w[0] = c0; sc.w[1] = b0; sc.w[2] = a0; sc.w[3] = c1; sc.w[4] = b1; sc.w[5] = a1; sc.w[6] = c2; sc.w[7] = b2; sc.w[8] = a2; }
+  return sc;
 }
 
-// the ball flies k more steps; which cells of the block it is then in are walls
-fn wallBits(x: i32, y: i32, dx: i32, dy: i32, k: i32, par: i32) -> u32 {
-  if (k >= INF) { return 0u; }
+// bit pos of row r (0..2) of a scan, if it lies in the words fetched, else -1
+fn scanBit(sc: ptr<function, Scan>, r: i32, pos: i32, nw: i32) -> i32 {
+  var wi = pos >> 5;
+  let d = wi - (*sc).i;
+  var k = -1;
+  if (d == 0) { k = 1; } else if (d == 1 || d == 1 - nw) { k = 2; } else if (d == -1 || d == nw - 1) { k = 0; }
+  if (k < 0) { return -1; }
+  return i32(((*sc).w[3 * r + k] >> u32(pos & 31)) & 1u);
+}
+
+struct Front { k: i32, bits: u32 }
+
+// the wall cells (bit c = corner c) of the block the ball is in after k lone steps
+fn blockWalls(x: i32, y: i32, dx: i32, dy: i32, k: i32, par: i32) -> u32 {
   let xk = x + dx * k; let yk = y + dy * k;
   let o = (par + k) & 1;
   let x0 = xk - ((xk - o) & 1); let y0 = yk - ((yk - o) & 1);
   return iswall(x0, y0) | (iswall(x0 + 1, y0) << 1u) | (iswall(x0, y0 + 1) << 2u) | (iswall(x0 + 1, y0 + 1) << 3u);
+}
+
+// steps until the block in front of a ball at (x, y) moving (dx, dy) holds a
+// wall (or it leaves the band), with that block's wall cells
+fn front(x: i32, y: i32, dx: i32, dy: i32, par: i32) -> Front {
+  var f: Front;
+  f.k = INF; f.bits = 0u;
+  let u2 = wrapi(x + y, u.U2);
+  let vv = x - y - u.lo + PAD;
+  var sc: Scan;
+  var k = INF;
+  if (dx == dy) {  // SE / NW: along a row of constant v, round the loop
+    let r0 = (vv - 1) * u.RWV; let r1 = r0 + u.RWV; let r2 = r1 + u.RWV;
+    let nw = (u.U2 + 31) >> 5;
+    if (dx > 0) {
+      sc = scanV(r0, r1, r2, u2 + 1, 1, nw);
+      if (sc.q >= u.U2) { sc.q = -1; }
+      if (sc.q < 0) { sc = scanV(r0, r1, r2, 0, 1, nw); }
+      if (sc.q < 0 || sc.q >= u.U2) { return f; }
+      k = (wrapi(sc.q - u2, u.U2) - 1) >> 1;
+    } else {
+      sc = scanV(r0, r1, r2, u2 - 1, -1, nw);
+      if (sc.q < 0) { sc = scanV(r0, r1, r2, u.U2 - 1, -1, nw); }
+      if (sc.q < 0) { return f; }
+      k = (wrapi(u2 - sc.q, u.U2) - 1) >> 1;
+    }
+    f.k = k;
+    // the block's cells lie in rows vv-1..vv+1 at u2 positions within 2 of the hit
+    let xk = x + dx * k; let yk = y + dy * k; let o = (par + k) & 1;
+    let x0 = xk - ((xk - o) & 1); let y0 = yk - ((yk - o) & 1);
+    for (var c = 0; c < 4; c++) {
+      let cx = x0 + (c & 1); let cy = y0 + (c >> 1);
+      let cv = cx - cy;
+      if (cv < u.lo || cv > u.hi) { continue; }
+      let b = scanBit(&sc, cv - (x - y) + 1, wrapi(cx + cy, u.U2), nw);
+      var bit = 0u;
+      if (b < 0) { bit = iswall(cx, cy); } else { bit = u32(b); }
+      f.bits |= bit << u32(c);
+    }
+    return f;
+  }
+  var ua = u2 - 1; if (ua < 0) { ua = u.U2 - 1; }
+  var ub = u2 + 1; if (ub == u.U2) { ub = 0; }
+  let R = u.RWU;
+  var ex = 0;
+  if (dy < 0) {  // NE: v rises
+    ex = (u.hi - (x - y)) >> 1;
+    sc = scanU(ua * R, u2 * R, ub * R, vv + 1, 1, R);
+    if (sc.q >= 0) { k = (sc.q - vv - 1) >> 1; }
+  } else {  // SW
+    ex = ((x - y) - u.lo) >> 1;
+    sc = scanU(ua * R, u2 * R, ub * R, vv - 1, -1, R);
+    if (sc.q >= 0) { k = (vv - sc.q - 1) >> 1; }
+  }
+  if (ex < k) { f.k = ex; f.bits = blockWalls(x, y, dx, dy, ex, par); return f; }  // leaves the band first (rare: at the edge)
+  f.k = k;
+  // the block's cells lie in rows u2-1..u2+1 at vv positions within 2 of the hit
+  let xk = x + dx * k; let yk = y + dy * k; let o = (par + k) & 1;
+  let x0 = xk - ((xk - o) & 1); let y0 = yk - ((yk - o) & 1);
+  for (var c = 0; c < 4; c++) {
+    let cx = x0 + (c & 1); let cy = y0 + (c >> 1);
+    let cv = cx - cy;
+    if (cv < u.lo || cv > u.hi) { continue; }
+    let b = scanBit(&sc, wrapi(cx + cy, u.U2) - u2 + 1, cv - u.lo + PAD, R);
+    var bit = 0u;
+    if (b < 0) { bit = iswall(cx, cy); } else { bit = u32(b); }
+    f.bits |= bit << u32(c);
+  }
+  return f;
 }
 
 fn freeSlot(s: u32) { let n = atomicAdd(&nfree, 1u); freeS[n] = s; }
@@ -223,8 +300,8 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
       if (wk[s] == -1) {
         let x = px[s]; let y = py[s];
         let dx = 1 - 2 * ((x - par) & 1); let dy = 1 - 2 * ((y - par) & 1);
-        let k = wallSteps(x, y, dx, dy);
-        wk[s] = k; wb[s] = wallBits(x, y, dx, dy, k, par);
+        let fr = front(x, y, dx, dy, par);
+        wk[s] = fr.k; wb[s] = fr.bits;
       }
     }
     // 3. reads and pictures at this step
