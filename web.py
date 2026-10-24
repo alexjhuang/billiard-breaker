@@ -1,6 +1,6 @@
 """Play brick breaker in a browser, next to a live view of the billiard machine.
 
-    python3 web.py [--port 8000] [--host 127.0.0.1] [--fps 20]
+    python3 web.py [--port 8000] [--host 127.0.0.1] [--threads 16] [--fps 30]
     python3 web.py --export DIR      # static site (GitHub Pages): the machine runs in the browser
 
 then open http://localhost:8000 (from elsewhere: ssh -L 8000:localhost:8000 <host>,
@@ -41,9 +41,10 @@ def uv(x, y, U2):
 
 
 class Machine:
-    def __init__(self, hw, fps=20):
+    def __init__(self, hw, threads=16, fps=30):
         self.P, self.lo, self.U2, self.fps_cap = hw['P'], hw['lo'], 2 * hw['U'], fps
         self.runner = fastsim.Runner(hw)
+        self.runner.w.threads = threads
         self.keys = dict(left=0, right=0, reset=1)  # reset on the first frame: the circuit sets the game up
         self.sweep = 8.0  # time-lapse: seconds per sweep of the frame (0 = real time)
         self.phase, self.fps, self.last_clip = 0.0, 0.0, 0.0
@@ -238,13 +239,13 @@ class Handler(BaseHTTPRequestHandler):
                 m.viewers -= 1
 
 
-def serve(host='127.0.0.1', port=8000, fps=20):
+def serve(host='127.0.0.1', port=8000, threads=16, fps=30):
     """Start the server and machine threads; returns the server (server_address has the port)."""
     hw = hardware.load()
     srv = ThreadingHTTPServer((host, port), Handler)
     srv.daemon_threads = True
     srv.meta, srv.walls = machine_info(hw)
-    srv.machine = Machine(hw, fps)
+    srv.machine = Machine(hw, threads, fps)
     threading.Thread(target=srv.machine.loop, daemon=True).start()
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv
@@ -274,7 +275,7 @@ def export(out):
 
 
 def main():
-    opts = dict(host='127.0.0.1', port=8000, fps=20)
+    opts = dict(host='127.0.0.1', port=8000, threads=min(16, os.cpu_count() or 1), fps=30)
     args = sys.argv[1:]
     if '--export' in args:
         out = args[args.index('--export') + 1]

@@ -35,6 +35,10 @@ Source of truth between sessions. Trust `python3 tests/run_all.py` over this fil
 - [x] M9 finish — README.md with measured numbers, layout images, final report.
 
 ## Current
+2026-10-24 (later): event engine on threads (world_run_tiles, incremental ghost
+swap, dimer-aware window edges): play.py --bench 8.7 -> 22 frames/s on 16
+threads, exact (tests/test_fastsim tiled tests, difftest bot games on 4 threads).
+Ceiling analysed in DECISIONS.md (ghost duplication 1.7x, imbalance 1.4-1.75x).
 2026-10-24: WebGPU engine for the static site (web/gpu.js, DECISIONS.md): the
 whole machine stepped exactly by one compute workgroup, balls' cells in a
 workgroup-memory hash set, walls in two 80 MB bitmaps read only on direction

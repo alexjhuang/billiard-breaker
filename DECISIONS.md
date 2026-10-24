@@ -199,3 +199,23 @@ expectation is 0.3–1 µs a step (a few barriers, L2-resident wall rows) i.e.
 The worker falls back to engine.js without WebGPU (or with ?cpu in the URL).
 Not done: the C engine on threads (tiles across the band with a light-cone
 margin, as the old stepper did) would do the same for web.py.
+
+## 2026-10-24 — the event engine on threads: tiles across the band, incremental
+world_run_tiles is back, for the event engine: every epoch of D steps the band
+is cut (by v, equal particle counts, fixed for the call) into T ranges; tile k
+is a private event-driven world sharing the wall bitmaps, holding the balls
+within G = 2D + 4 of its range; it keeps what ends inside the range (exact by
+the light cone, as the old stepper). Two things made it pay: tiles keep their
+own-range balls from epoch to epoch and only swap the ghost zones (re-adding a
+ghost lowers the events of the balls it can meet, so nothing is missed), and
+the window edges avoid splitting a falling or rising dimer. A tile's broken
+flag is trusted only where its window edges cannot have reached.
+Measured, 16 threads, epoch 64: play.py --bench 40 goes 8.7 -> 22 frames/s
+(112 -> ~45 ms a frame). The ceiling is geometric, not overhead: at any moment
+the live balls fill only ~2 200 of the band's 7 541 rows, so a tile's own
+range is ~110 rows wide while the margin is 132 on each side; the ghost zones
+redo 1.7x the real machine's events (measured: 1.39 M blocks per frame across
+tiles against 518 k real), and event density varies 1.4-1.75x between tiles.
+Shorter epochs shrink the margin but multiply the barriers (2232 at D = 32).
+Not tried: cutting by predicted events instead of ball counts; re-cutting
+every epoch with a cell set to find migrated balls.

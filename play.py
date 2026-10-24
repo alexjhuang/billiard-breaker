@@ -6,6 +6,7 @@ only adds key balls at the input ports (plus the fixed power schedule the
 runner adds), reads the state lanes, and draws them. It starts from an empty
 world and holds reset on the first frame, so the circuit sets the game up.
 """
+import os
 import sys
 import fastsim
 import hardware
@@ -23,6 +24,10 @@ def decode(bits):
 
 def main():
     hw = hardware.load()
+    threads = min(16, os.cpu_count() or 1)
+    if '--threads' in sys.argv:
+        threads = int(sys.argv[sys.argv.index('--threads') + 1])
+    fastsim.FastCyl.threads = threads
     runner = fastsim.Runner(hw)
 
     def stepper(left, right, reset):

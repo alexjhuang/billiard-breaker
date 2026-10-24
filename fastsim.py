@@ -40,6 +40,8 @@ def lib():
         L.world_run_trace.restype = I64
         L.world_run_trace.argtypes = [ctypes.c_void_p, I64, I64, P64, I64, P64, ctypes.POINTER(ctypes.c_uint8),
                                       ctypes.POINTER(ctypes.c_int32), I64, P64]
+        L.world_run_tiles.argtypes = [ctypes.c_void_p, I64, I64, P64, I64, P64, ctypes.POINTER(ctypes.c_uint8),
+                                      ctypes.c_int, I64]
         _lib = L
     return _lib
 
@@ -76,6 +78,8 @@ class FastCyl:
     def broken(self):
         return bool(lib().world_broken(self.w))
 
+    threads, epoch = 1, 64  # >1 threads: tiles across the band (world_run_tiles), `epoch` steps between merges
+
     def run(self, t_end, feeds=(), reads=(), traces=()):
         """feeds/reads: sorted lists of (t, x, y). Returns list of read bits.
         traces: (T, K) pairs; the K steps up to time T run serially and the
@@ -99,7 +103,10 @@ class FastCyl:
         return (bits, got) if traces else bits
 
     def _run(self, t_end, args):
-        lib().world_run(self.w, t_end, *args)
+        if self.threads > 1:
+            lib().world_run_tiles(self.w, t_end, *args, self.threads, self.epoch)
+        else:
+            lib().world_run(self.w, t_end, *args)
 
     def step(self, n=1):
         self.run(self.t + n)

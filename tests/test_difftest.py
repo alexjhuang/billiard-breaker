@@ -6,7 +6,7 @@ import difftest
 
 
 def test_machine_matches_oracle_20_x_1000_frames_and_wins():
-    jobs = [(s, 1000, False) for s in range(20)] + [(s, 2400, False) for s in (1000, 1001)]
+    jobs = [(s, 1000, False, 1) for s in range(20)] + [(s, 2400, False, 4) for s in (1000, 1001)]  # the bot games on 4 tile threads
     with mp.Pool(len(jobs)) as p:
         res = p.map(difftest.run, jobs)
     bad = [r[:2] for r in res if not r[1].startswith('ok')]

@@ -32,7 +32,7 @@ static const int DX[4] = {1, -1, 1, -1}, DY[4] = {1, 1, -1, -1};   /* d = rx + 2
 static const int KIND[4][3] = {{0, 1, 4}, {2, 1, 5}, {0, 3, 5}, {2, 3, 4}};  /* keys each direction is indexed by */
 static const int SLOT[4][NKIND] = {{0, 1, -1, -1, 2, -1}, {-1, 1, 0, -1, -1, 2}, {0, -1, -1, 1, -1, 2}, {-1, -1, 0, 1, 2, -1}};  /* KIND inverted */
 
-typedef struct {
+typedef struct World_ {
     int64_t U, U2, lo, hi, V2, S, RWU, RWV;
     uint64_t *wu;   /* walls, rows of constant u2 = x + y: word u2 * RWU + (vv >> 6), bit vv & 63; vv = x - y - lo + PAD */
     uint64_t *wv;   /* walls, rows of constant vv: word vv * RWV + (u2 >> 6), bit u2 & 63 */
@@ -48,6 +48,11 @@ typedef struct {
     int32_t *grp; int64_t gcap;
     int64_t t;
     int broken;
+    /* tiles (world_run_tiles): private copies sharing the walls; a tile trusts
+     * only blocks the window edges cannot have reached yet */
+    int tiled, shared_walls; int64_t wlo, whi, tbase;
+    struct World_ **tiles; int ntiles;
+    int64_t *kx, *ky; int64_t nk, kcap;   /* a tile's kept particles after an epoch */
 } World;
 
 static inline int64_t mod(int64_t a, int64_t m) { int64_t r = a % m; return r < 0 ? r + m : r; }
@@ -74,7 +79,9 @@ World *world_new(int64_t U, int64_t lo, int64_t hi) {
 }
 
 void world_free(World *w) {
-    free(w->wu); free(w->wv);
+    for (int k = 0; k < w->ntiles; k++) world_free(w->tiles[k]);
+    free(w->tiles); free(w->kx); free(w->ky);
+    if (!w->shared_walls) { free(w->wu); free(w->wv); }
     for (int k = 0; k < NKIND; k++) { free(w->head[k]); free(w->nbm[k]); }
     for (int j = 0; j < 3; j++) { free(w->nxt[j]); free(w->prv[j]); free(w->bk[j]); }
     free(w->x); free(w->y); free(w->t0); free(w->ev); free(w->d); free(w->alive); free(w->ver); free(w->mark);
@@ -385,7 +392,11 @@ static void process_block(World *w, int64_t T, int32_t *ids, int m) {
     if (cnt == 1) { for (int c = 0; c < 4; c++) to[c] = 3 - c; }
     else if (cnt == 2 && f[0] && f[3]) { to[0] = 1; to[3] = 2; }
     else if (cnt == 2 && f[1] && f[2]) { to[1] = 0; to[2] = 3; }
-    for (int c = 0; c < 4; c++) if (wl[c] && to[c] != c) w->broken = 1;
+    for (int c = 0; c < 4; c++)
+        if (wl[c] && to[c] != c) {
+            int64_t v = x0 - y0, m = w->tiled ? 2 * (T - w->tbase) + 4 : 0;   /* in a tile: only where the result is exact */
+            if (!w->tiled || (v >= w->wlo + m && v <= w->whi - m)) w->broken = 1;
+        }
     for (int c = 0; c < 4; c++) {
         int32_t i = mv[c];
         if (i < 0) continue;
@@ -491,4 +502,211 @@ int64_t world_cells(World *w, int64_t *xy, int64_t cap) {
         xy[2 * n] = x; xy[2 * n + 1] = y; n++;
     }
     return w->nalive;
+}
+
+/* ------------------------------------------------------------------------
+ * Tiled multithreaded run (same result as world_run). Every epoch of D
+ * steps the particles are split across the band (by v = x - y) into T
+ * ranges with equal counts. Thread k loads the particles within G = 2*D + 4
+ * of its range into a private world (sharing the wall bitmaps), runs the
+ * epoch's events there, and keeps the particles that end inside its own
+ * range. Nothing moves faster than 2 in v per step, so whatever the window
+ * gets wrong near its edges cannot reach the range within D steps: the kept
+ * particles are exact. Feeds go to every tile whose window holds them; a
+ * read is answered by the tile owning its cell. Between epochs the master
+ * is just a list of positions; it is rebuilt as a world at the end. */
+#include <pthread.h>
+#include <stdatomic.h>
+
+typedef struct {
+    World *w; int T; int64_t t0, t1; uint8_t *out;
+    const int64_t *feeds, *reads; int64_t fa, fb, ra, rb;   /* this epoch's feeds / reads */
+    int64_t *cuts; int first;                               /* T + 1 range ends in v; first epoch of the call */
+    const int64_t *lx, *ly; int64_t n;                      /* the particle list at t0 */
+    _Alignas(64) atomic_int count; _Alignas(64) atomic_int sense; int stop;
+} TP;
+
+static void tbar(TP *M, int *local) {
+    *local = !*local;
+    if (atomic_fetch_add(&M->count, 1) == M->T - 1) { atomic_store(&M->count, 0); atomic_store(&M->sense, *local); }
+    else while (atomic_load_explicit(&M->sense, memory_order_acquire) != *local) ;
+}
+
+static World *tile_new(World *m) {
+    World *w = calloc(1, sizeof(World));
+    w->U = m->U; w->U2 = m->U2; w->lo = m->lo; w->hi = m->hi; w->V2 = m->V2; w->S = m->S; w->RWU = m->RWU; w->RWV = m->RWV;
+    w->wu = m->wu; w->wv = m->wv; w->shared_walls = 1; w->tiled = 1;
+    memcpy(w->nb, m->nb, sizeof m->nb);
+    for (int k = 0; k < NKIND; k++) { w->head[k] = malloc(w->nb[k] * 4); memset(w->head[k], -1, w->nb[k] * 4); w->nbm[k] = calloc(w->nb[k] / 64 + 1, 8); }
+    w->free_head = -1;
+    return w;
+}
+
+/* remove every particle (index and heap included); the world is then empty at time t */
+static void world_clear(World *w, int64_t t) {
+    for (int32_t i = 0; i < w->top; i++) if (w->alive[i]) { index_del(w, i); w->alive[i] = 0; w->ver[i]++; }
+    w->top = 0; w->nalive = 0; w->free_head = -1; w->hn = 0; w->t = t;
+}
+
+/* every particle's position at time t (canonical); returns the count */
+static int64_t world_list(World *w, int64_t t, int64_t **lx, int64_t **ly) {
+    *lx = malloc((w->nalive + 1) * 8); *ly = malloc((w->nalive + 1) * 8);
+    int64_t n = 0;
+    for (int32_t i = 0; i < w->top; i++) {
+        if (!w->alive[i]) continue;
+        int64_t dt = t - w->t0[i], x = w->x[i] + DX[w->d[i]] * dt, y = w->y[i] + DY[w->d[i]] * dt;
+        canon(w, &x, &y);
+        (*lx)[n] = x; (*ly)[n] = y; n++;
+    }
+    return n;
+}
+
+/* Move a window edge outward until it splits no falling or rising dimer (two
+ * NE/SW particles on one line x + y, within 12 in v): a lone half ball bounces
+ * off every mirror and shatters lanes, junk that costs events all epoch long
+ * (it can never reach the tile's own range, but it is work). */
+static int64_t widen(TP *M, int64_t edge, int outward) {
+    World *w = M->w;
+    int o = (int)(M->t0 & 1);
+    for (int iter = 0; iter < 6; iter++) {
+        int moved = 0;
+        for (int64_t j = 0; j < M->n && !moved; j++) {
+            int64_t x = M->lx[j], y = M->ly[j], v = x - y;
+            if (v < edge - 13 || v > edge + 13) continue;
+            if (((x - o) & 1) == ((y - o) & 1)) continue;   /* SE or NW: stays on its line */
+            int64_t u2 = x + y;
+            for (int64_t q = 0; q < M->n; q++) {
+                if (q == j || M->lx[q] + M->ly[q] != u2) continue;
+                int64_t vq = M->lx[q] - M->ly[q];
+                if (vq < v - 12 || vq > v + 12) continue;
+                int64_t a = v < vq ? v : vq, b = v < vq ? vq : v;
+                if (outward < 0 && a < edge && b >= edge) { edge = a; moved = 1; break; }   /* lower edge: window is [edge, ..] */
+                if (outward > 0 && a <= edge && b > edge) { edge = b; moved = 1; break; }   /* upper edge: window is [.., edge] */
+            }
+        }
+        if (!moved) break;
+    }
+    return edge < w->lo ? w->lo : edge > w->hi ? w->hi : edge;
+}
+
+/* One epoch of tile k. Its own-range particles are exact and stay in the
+ * tile from epoch to epoch (the cuts are fixed for the call); only the ghost
+ * zones are replaced, from the merged list. Re-adding a ghost lowers the
+ * events of the own particles it can meet, so nothing is missed. */
+static void tile_epoch(TP *M, int k) {
+    World *w = M->w, *t = w->tiles[k];
+    int64_t G = 2 * (M->t1 - M->t0) + 4, vlo = M->cuts[k], vhi = M->cuts[k + 1];
+    t->wlo = widen(M, vlo - G > w->lo ? vlo - G : w->lo, -1);
+    t->whi = widen(M, vhi - 1 + G < w->hi ? vhi - 1 + G : w->hi, +1);
+    t->tbase = M->t0;
+    if (M->first) world_clear(t, M->t0);
+    else {
+        for (int32_t i = 0; i < t->top; i++) {   /* drop last epoch's ghosts (where they are now, not at their last event) */
+            if (!t->alive[i]) continue;
+            int64_t dt = M->t0 - t->t0[i], v = (t->x[i] - t->y[i]) + (DX[t->d[i]] - DY[t->d[i]]) * dt;
+            if (v < vlo || v >= vhi) { index_del(t, i); free_particle(t, i); }
+        }
+    }
+    for (int64_t j = 0; j < M->n; j++) {
+        int64_t v = M->lx[j] - M->ly[j];
+        if (v < t->wlo || v > t->whi) continue;
+        if (!M->first && v >= vlo && v < vhi) continue;   /* mine already, exact */
+        schedule(t, new_particle(t, M->lx[j], M->ly[j], M->t0));
+    }
+    int64_t fi = M->fa, ri = M->ra;
+    while (t->t < M->t1) {
+        int64_t next = M->t1;
+        if (fi < M->fb && M->feeds[3 * fi] < next) next = M->feeds[3 * fi];
+        if (ri < M->rb && M->reads[3 * ri] < next) next = M->reads[3 * ri];
+        run_to(t, next);
+        for (; fi < M->fb && M->feeds[3 * fi] == next; fi++) {
+            int64_t v = M->feeds[3 * fi + 1] - M->feeds[3 * fi + 2];
+            if (v >= t->wlo && v <= t->whi) world_add(t, 1, M->feeds + 3 * fi + 1, 0);
+        }
+        for (; ri < M->rb && M->reads[3 * ri] == next; ri++) {
+            int64_t v = M->reads[3 * ri + 1] - M->reads[3 * ri + 2];
+            if (v >= vlo && v < vhi) M->out[ri] = (uint8_t)occupied(t, M->reads[3 * ri + 1], M->reads[3 * ri + 2], next);
+        }
+    }
+    if (t->kcap < t->nalive + 1) { t->kcap = 2 * (t->nalive + 1); t->kx = realloc(t->kx, t->kcap * 8); t->ky = realloc(t->ky, t->kcap * 8); }
+    t->nk = 0;
+    for (int32_t i = 0; i < t->top; i++) {   /* keep what ended in my own range */
+        if (!t->alive[i]) continue;
+        int64_t dt = M->t1 - t->t0[i], x = t->x[i] + DX[t->d[i]] * dt, y = t->y[i] + DY[t->d[i]] * dt;
+        if (x - y < vlo || x - y >= vhi) continue;
+        canon(t, &x, &y);
+        t->kx[t->nk] = x; t->ky[t->nk] = y; t->nk++;
+    }
+}
+
+typedef struct { TP *M; int id; } TArg;
+
+static void *tile_worker(void *arg) {
+    TP *M = ((TArg *)arg)->M; int id = ((TArg *)arg)->id, local = 0;
+    while (1) {
+        tbar(M, &local);              /* the epoch is set up */
+        if (M->stop) break;
+        tile_epoch(M, id);
+        tbar(M, &local);              /* results ready */
+    }
+    return NULL;
+}
+
+#define HB 16  /* histogram bin width in v for the cuts */
+
+void world_run_tiles(World *w, int64_t t_end, int64_t nf, const int64_t *feeds,
+                     int64_t nr, const int64_t *reads, uint8_t *out, int T, int64_t D) {
+    if (w->ntiles < T) {
+        w->tiles = realloc(w->tiles, T * sizeof(World *));
+        for (int k = w->ntiles; k < T; k++) w->tiles[k] = tile_new(w);
+        w->ntiles = T;
+    }
+    TP M; memset(&M, 0, sizeof M);
+    M.w = w; M.T = T; M.out = out; M.feeds = feeds; M.reads = reads;
+    M.cuts = malloc((T + 1) * 8);
+    int64_t *lx, *ly, n = world_list(w, w->t, &lx, &ly), cap = n + 1;
+    world_clear(w, w->t);
+    int64_t nb = w->V2 / HB + 2, *hist = malloc(nb * 8);
+    pthread_t th[T]; TArg args[T];
+    for (int k = 1; k < T; k++) { args[k] = (TArg){&M, k}; pthread_create(&th[k], NULL, tile_worker, &args[k]); }
+    int local = 0;
+    int64_t fi = 0, ri = 0;
+    while (fi < nf && feeds[3 * fi] < w->t) fi++;
+    while (ri < nr && reads[3 * ri] < w->t) ri++;
+    memset(hist, 0, nb * 8);   /* equal-count ranges from a coarse histogram of v, fixed for this call */
+    for (int64_t j = 0; j < n; j++) hist[(lx[j] - ly[j] - w->lo) / HB]++;
+    M.cuts[0] = w->lo; M.cuts[T] = w->hi + 1;
+    {
+        int64_t acc = 0; int k = 1;
+        for (int64_t b = 0; b < nb && k < T; b++) {
+            acc += hist[b];
+            while (k < T && acc * T >= n * k) M.cuts[k++] = w->lo + (b + 1) * HB;
+        }
+        for (; k < T; k++) M.cuts[k] = w->hi + 1;
+    }
+    M.first = 1;
+    while (w->t < t_end) {
+        M.t0 = w->t; M.t1 = w->t + D < t_end ? w->t + D : t_end;
+        M.lx = lx; M.ly = ly; M.n = n;
+        M.fa = fi; while (fi < nf && feeds[3 * fi] < M.t1) fi++; M.fb = fi;
+        M.ra = ri; while (ri < nr && reads[3 * ri] < M.t1) ri++; M.rb = ri;
+        tbar(&M, &local);
+        tile_epoch(&M, 0);
+        tbar(&M, &local);
+        int64_t tot = 0;   /* merge the kept particles */
+        for (int k2 = 0; k2 < T; k2++) { tot += w->tiles[k2]->nk; if (w->tiles[k2]->broken) { w->broken = 1; w->tiles[k2]->broken = 0; } }
+        if (tot + 1 > cap) { cap = 2 * (tot + 1); lx = realloc(lx, cap * 8); ly = realloc(ly, cap * 8); }
+        n = 0;
+        for (int k2 = 0; k2 < T; k2++) {
+            World *t = w->tiles[k2];
+            memcpy(lx + n, t->kx, t->nk * 8); memcpy(ly + n, t->ky, t->nk * 8); n += t->nk;
+        }
+        w->t = M.t1;
+        M.first = 0;
+    }
+    M.stop = 1;
+    tbar(&M, &local);
+    for (int k = 1; k < T; k++) pthread_join(th[k], NULL);
+    for (int64_t j = 0; j < n; j++) schedule(w, new_particle(w, lx[j], ly[j], w->t));   /* the master is a world again */
+    free(lx); free(ly); free(M.cuts); free(hist);
 }

@@ -13,6 +13,11 @@ import threading
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
+
+class Quiet(SimpleHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 FLAGS = ['--enable-unsafe-webgpu', '--enable-features=Vulkan', '--use-angle=swiftshader', '--use-webgpu-adapter=swiftshader']
 
@@ -36,7 +41,7 @@ def test_gpu_engine_matches_js_engine():
     with tempfile.TemporaryDirectory() as d:
         web.export(d)
         shutil.copy(ROOT / 'tests' / 'gpu_check.html', d)
-        srv = ThreadingHTTPServer(('127.0.0.1', 0), partial(SimpleHTTPRequestHandler, directory=d))
+        srv = ThreadingHTTPServer(('127.0.0.1', 0), partial(Quiet, directory=d))
         srv.daemon_threads = True
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         try:

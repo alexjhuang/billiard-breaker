@@ -60,8 +60,8 @@ Frames and ball positions stream to the page as server-sent events, and keys
 come back as POSTs. Neither the server nor the page contains any game rules.
 tests/test_web.py checks the frames against the oracle, and checks that every
 picture matches a separate replay of the machine at the stated steps. Measured
-here: ~8.5 frames/s at ~116 ms of compute per frame (one core), and ~115 KB/s
-per viewer. The simulator does not step free flight, so the ball positions in
+here: ~22 frames/s at ~45 ms of compute per frame on 16 threads (8.7 on one),
+~115 KB/s per viewer; the `--fps` cap is 30. The simulator does not step free flight, so the ball positions in
 the pictures are extrapolated to the requested steps, not stepped to them.
 
 To use it from another computer: `ssh -L 8000:localhost:8000 <host>`, or
@@ -157,9 +157,17 @@ y−t, x+t, y+t, and x−y or x+y for head-on pairs. The meeting step is then
 solved in closed form. Events are popped from a heap, grouped by block, and
 the Margolus rule is applied to the block as usual. Results are identical to
 the stepping simulators (tests/test_fastsim.py checks dense random patterns
-against cyl.py). One core now does what 16 tile threads did before, and
-positions at any step are extrapolated for free, which is what the browser's
-ring view uses. web/engine.js is the same engine in JavaScript.
+against cyl.py). One core now does what 16 tile threads did with the stepper,
+and positions at any step are extrapolated for free, which is what the
+browser's ring view uses. web/engine.js is the same engine in JavaScript.
+
+On threads (`play.py`, `web.py`: 16 by default, `--threads N`) the band is cut
+across (by x−y) into ranges of equal ball counts; each thread runs its range
+plus a light-cone margin of 2·64+4 rows as a private event-driven world for 64
+steps, keeps the balls that end in its range (exact, nothing moves faster than
+2 rows a step), and only the margins are refreshed between epochs. The gain is
+bounded by geometry: the live balls fill only ~2 200 rows of the band at a
+time, so the margins redo 1.7x the real machine's events (DECISIONS.md).
 
 | Whole frame (u along the loop, v up the band; dark = mirrors) |
 |---|
@@ -173,7 +181,8 @@ right bring next-state values back up. `docs/slot.png` zooms in on one gate.
 
 | | |
 |---|---|
-| frame rate, `python3 play.py --bench 40` (one core) | **7.8, 8.5 frames/s** (2 runs; 116 ms per frame) |
+| frame rate, `python3 play.py --bench 40 --threads 16` (the default) | **22.4, 21.8 frames/s** (2 runs, load average ~50) |
+| frame rate, `--threads 1` | 8.7 frames/s (115 ms per frame) |
 | the same machine stepped (old simulator, estimate from 125 ms on the old machine) | ~4 frames/s on one core |
 | in the browser, CPU engine (web/engine.js under Node) | 3.7 frames/s |
 | in the browser, GPU engine (web/gpu.js) | not measured here (no GPU); exact on the software adapter |
@@ -206,7 +215,7 @@ and ~60 ms stepping on 16 tile threads.
 - `difftest.py`: the billiard machine against `oracle.py`, bit for bit, state
   and win/lose flags every frame. Last full run on the current build:
   20/20 sequences × 1000 frames and 2 × 2400 frames with full wins (256
-  points each); log in build/tests_atari.log.
+  points each, the bot games on 4 tile threads); log in build/tests_tiles.log.
 
 ## Known limitations
 
@@ -214,6 +223,9 @@ and ~60 ms stepping on 16 tile threads.
   every lane detours in every slot, so a ball has an event every ~32 steps and
   a frame is ~690 k reschedules at ~170 ns each (C) or ~400 ns (JavaScript).
   Shortening the frame now means fewer events, i.e. fewer idle detours.
+- Threads give 2.5x, not 16x: the light-cone margins redo 1.7x the real
+  events because the live balls occupy a narrow part of the band, and the
+  epoch barriers (1 116 a frame) cost on a shared machine.
 - The arcade rules cost 60%: 776 gates instead of 488, 184 lines instead of
   150, so P grew from 43 456 to 71 396 steps and the frame rate halved. At
   the base speed the ball moves every other frame, so at ~8 frames/s it
@@ -230,9 +242,8 @@ and ~60 ms stepping on 16 tile threads.
   by 28 steps per gate and every lane costs ~12 events per slot. Letting lanes
   keep their own timing and packing independent gates into the same slot
   would cut both P and the event count several-fold.
-- Run the event engine on threads for web.py: balls far apart across the
-  band are independent for many steps (light cone), so the band could be cut
-  into tiles of events with a ghost margin, like the old tiled stepper.
+- Better tiles: cut the band by predicted events rather than ball counts
+  (tiles differ 1.4–1.75x in work), and re-cut every epoch.
 - Measure and tune the GPU engine on real hardware: the wall scans are the
   only global memory traffic per step; halving the bitmaps (cells have
   x+y ≡ x−y mod 2) and prefetching the scan words would cut their latency.
