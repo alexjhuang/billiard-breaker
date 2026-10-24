@@ -460,10 +460,11 @@ class Machine {
 }
 
 // ---------------------------------------------------------------- Web Worker: the frame loop of web.py
+// The machine runs on the GPU (web/gpu.js, WebGPU) when it can, else here on the CPU.
 if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScope) {
-  const PICS = 3, CLIP = 16, CLIP_EVERY = 0.3, FPS_CAP = 20;
-  let M = null, keys = { left: 0, right: 0, reset: 1 }, sweep = 8, phase = 0, fps = 0, period = 0, lastClip = -1;
-  let tPrev = null, tNext = 0, paused = false, timer = null;
+  const PICS = 3, CLIP = 16, CLIP_EVERY = 0.3, FPS_CAP = 30;
+  let M = null, engine = '', keys = { left: 0, right: 0, reset: 1 }, sweep = 8, phase = 0, fps = 0, period = 0, lastClip = -1;
+  let tPrev = null, tNext = 0, paused = false, timer = null, busy = false;
   const now = () => performance.now() / 1000;
   const pictureTimes = () => {  // same schedule as web.py Machine.picture_times
     const P = M.P, step = !sweep ? P / PICS : Math.max(1, P / (PICS * (fps || FPS_CAP) * sweep));
@@ -477,32 +478,45 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
     phase = (phase + PICS * step) % P;
     return [...times].sort((a, b) => a[0] - b[0]);
   };
-  const loop = () => {
+  const loop = async () => {
+    busy = true;
     try {
       const t0 = now();
       tNext = Math.max(tNext + 1 / FPS_CAP, t0);
       const inp = { ...keys }, n = M.n;
       keys.reset = 0;
-      const r = M.frame(inp, pictureTimes()), ms = 1000 * (now() - t0);
+      const r = await M.frame(inp, pictureTimes()), ms = 1000 * (now() - t0);
       if (tPrev !== null) { period = fps ? .8 * period + .2 * (t0 - tPrev) : t0 - tPrev; fps = 1 / period; }
       tPrev = t0;
-      postMessage({ type: 'frame', n, state: r.state, win: r.win, lose: r.lose, inp, ms: Math.round(ms * 10) / 10, fps: Math.round(fps * 100) / 100 });
+      postMessage({ type: 'frame', n, state: r.state, win: r.win, lose: r.lose, inp, ms: Math.round(ms * 10) / 10, fps: Math.round(fps * 100) / 100, engine });
       postMessage({ type: 'pics', n, P: M.P, sweep, pics: r.pics }, r.pics.map(q => q.raw.buffer));
       timer = paused ? null : setTimeout(loop, Math.max(0, 1000 * (tNext - now())));
     } catch (e) {
       postMessage({ type: 'fault', error: String(e) });
     }
+    busy = false;
+  };
+  const start = async d => {
+    if (!d.cpu) {
+      try {
+        importScripts('gpu.js');
+        M = await new GpuMachine(d.meta, d.squares).init();
+        engine = 'GPU · ' + M.info;
+      } catch (e) { M = null; engine = 'CPU (no WebGPU: ' + String(e).replace(/^Error: /, '') + ')'; }
+    } else engine = 'CPU';
+    if (!M) M = new Machine(d.meta, d.squares);
+    tNext = now(); loop();
   };
   onmessage = e => {
     const d = e.data;
-    if (d.type === 'init') { M = new Machine(d.meta, d.squares); tNext = now(); loop(); }
+    if (d.type === 'init') start(d);
     else if (d.type === 'control') {
       for (const k of ['left', 'right']) if (k in d) keys[k] = d[k] ? 1 : 0;
       if (d.reset) keys.reset = 1;
       if (typeof d.sweep === 'number') sweep = Math.max(0, Math.min(600, d.sweep));
       if ('pause' in d) {  // hidden tab: stop computing
         paused = !!d.pause;
-        if (!paused && !timer) { tNext = now(); tPrev = null; loop(); }
+        if (!paused && !timer && !busy) { tNext = now(); tPrev = null; loop(); }
       }
     }
   };

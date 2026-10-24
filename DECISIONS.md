@@ -175,3 +175,27 @@ is one cell and moves one cell per frame: moving two cells would double the
 collision logic. Not done: the arcade's angle changes from where the ball
 hits the paddle (the ball here is strictly diagonal), its 8 brick rows, and
 the paddle re-growing. Circuit: 488 → 776 switch gates, state 51 → 71 bits.
+
+## 2026-10-24 — the machine on the GPU (web/gpu.js, WebGPU)
+Why stepping, not events: the event engine is serial by nature (a heap and
+an index), and skipping steps on a GPU would need the whole machine to agree
+on the next event, but with ~7 events per step somewhere in the band almost
+no step is free. So the GPU engine steps the automaton exactly, one workgroup
+of 256 threads for the whole machine, two ball slots per thread (up to 512
+balls; the game has ~230). The balls' cells live in a 1024-entry hash set in
+workgroup memory, rebuilt every step, so the Margolus rule on a ball's block
+is three on-chip lookups; the only global memory a step touches is the wall
+bitmaps, read when a ball's direction changed, to find the step at which its
+front reaches a wall and the wall cells of that block (the same scans as
+bbm.c; both bitmaps, 160 MB, are uploaded once). A step is four barriers.
+Feeds, reads and the pictures are served in the shader at their steps; a
+frame is 35 dispatches of 2048 steps in one command buffer and one readback.
+Exact: tests/test_gpu.py runs it against web/engine.js on Chromium's software
+WebGPU adapter (SwiftShader), the only WebGPU on this machine: identical
+states, flags and recorded balls. Not measured here: speed on a real GPU
+(SwiftShader takes ~33 s a frame emulating 256 threads on the CPU). The
+expectation is 0.3–1 µs a step (a few barriers, L2-resident wall rows) i.e.
+20–70 ms a frame against 274 ms on the CPU engine; the page shows the number.
+The worker falls back to engine.js without WebGPU (or with ?cpu in the URL).
+Not done: the C engine on threads (tiles across the band with a light-cone
+margin, as the old stepper did) would do the same for web.py.

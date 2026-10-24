@@ -35,6 +35,13 @@ Source of truth between sessions. Trust `python3 tests/run_all.py` over this fil
 - [x] M9 finish — README.md with measured numbers, layout images, final report.
 
 ## Current
+2026-10-24: WebGPU engine for the static site (web/gpu.js, DECISIONS.md): the
+whole machine stepped exactly by one compute workgroup, balls' cells in a
+workgroup-memory hash set, walls in two 80 MB bitmaps read only on direction
+changes. tests/test_gpu.py: identical to engine.js on Chromium's SwiftShader
+adapter (headless, via tests/cdp_title.js). Real-GPU speed not measurable here
+(no GPU); the page shows "running in your browser on the GPU · <vendor>" and
+the ms/frame. ?cpu forces the JS engine. Exported files are versioned (?v=).
 2026-10-23: two changes, both verified by the full suite (build/tests_atari.log):
 - csim/bbm.c is event-driven (free flight is not stepped; DECISIONS.md). One
   core: 63 ms/frame on the 488-gate machine (stepping: 125 ms serial, ~60 ms on

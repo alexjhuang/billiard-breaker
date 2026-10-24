@@ -1,7 +1,8 @@
 # Brick Breaker on a Billiard Ball Computer
 
 **Play it in your browser: https://alexjhuang.github.io/billiard-breaker/** (the
-machine runs on your computer, ~4 frames/s; `python3 web.py` locally is faster).
+machine runs on your computer: on your GPU through WebGPU where the browser has
+it, else on one CPU core at ~4 frames/s).
 
 A playable brick-breaker game whose entire game logic is computed by billiard
 balls: a Margolus billiard-ball-model cellular automaton (BBMCA). The frontend
@@ -68,15 +69,32 @@ To use it from another computer: `ssh -L 8000:localhost:8000 <host>`, or
 machine pauses while nobody is connected.
 
 **Static version (GitHub Pages).** `python3 web.py --export DIR` writes the
-same page plus `web/engine.js`, a JavaScript port of the C simulator and the
-frame runner, and the hardware as data (~200 KB in all). The machine then runs
-in the visitor's browser, in a Web Worker on one core: 3.7 frames/s under Node
-on this machine (274 ms per frame; the old stepping engine took 171 ms per
-frame on the old, 40% smaller machine). A laptop core should do somewhat
-better. tests/test_engine.py checks the JS engine against the C simulator
-(states, flags and every recorded ball). Published at
-https://alexjhuang.github.io/billiard-breaker/ from the `gh-pages` branch. To
-update it:
+same page plus the hardware as data and two engines that run the machine in the
+visitor's browser, in a Web Worker: `web/gpu.js` on the GPU through WebGPU, and
+`web/engine.js`, a JavaScript port of the C simulator, on one CPU core when
+there is no WebGPU (or with `?cpu` in the URL). The page says which one is
+running and how long a frame takes.
+
+- *GPU.* One compute workgroup of 256 threads steps the whole automaton, every
+  ball at once (two slots per thread, up to 512 balls). The balls' cells are a
+  hash set in on-chip workgroup memory, rebuilt each step, so applying the
+  rule to a ball's block is three on-chip lookups and a step is four barriers;
+  the mirrors are two read-only bitmaps in GPU memory (160 MB) that a ball
+  reads only when its direction changes, to find the step at which its front
+  reaches a wall. Feeds, reads and pictures are served inside the shader; a
+  frame is 35 dispatches of 2048 steps in one command buffer and one readback.
+  tests/test_gpu.py checks it against the JS engine on Chromium's software
+  WebGPU adapter, the only WebGPU on this machine: identical states, flags and
+  recorded balls. **Speed on a real GPU is not measured here** (there is
+  none); the design aims at 0.3–1 µs a step, i.e. 20–70 ms a frame, and the
+  page shows the actual number.
+- *CPU.* 3.7 frames/s under Node on this machine (274 ms per frame; the old
+  stepping engine took 171 ms per frame on the old, 40% smaller machine).
+  tests/test_engine.py checks it against the C simulator.
+
+Published at https://alexjhuang.github.io/billiard-breaker/ from the
+`gh-pages` branch (data files are versioned by content, so a cached page never
+loads another build's machine). To update it:
 
 ```
 python3 web.py --export /tmp/site && cd /tmp/site && git init -q -b gh-pages && git add -A \
@@ -157,7 +175,8 @@ right bring next-state values back up. `docs/slot.png` zooms in on one gate.
 |---|---|
 | frame rate, `python3 play.py --bench 40` (one core) | **7.8, 8.5 frames/s** (2 runs; 116 ms per frame) |
 | the same machine stepped (old simulator, estimate from 125 ms on the old machine) | ~4 frames/s on one core |
-| in the browser (web/engine.js under Node) | 3.7 frames/s |
+| in the browser, CPU engine (web/engine.js under Node) | 3.7 frames/s |
+| in the browser, GPU engine (web/gpu.js) | not measured here (no GPU); exact on the software adapter |
 | world | cylinder 42 472 × 7 541 (u × x−y): 320 M cells |
 | frame period P | 71 396 automaton steps |
 | events per frame | 518 k blocks with more than a lone ball; 686 k ball reschedules; 16 M ball-steps of free flight skipped |
@@ -211,9 +230,12 @@ and ~60 ms stepping on 16 tile threads.
   by 28 steps per gate and every lane costs ~12 events per slot. Letting lanes
   keep their own timing and packing independent gates into the same slot
   would cut both P and the event count several-fold.
-- Run the event engine on threads: events far apart along the loop are
-  independent for many steps (light cone), so the loop could be cut into
-  strips of events with a ghost margin, like the old tiled stepper.
+- Run the event engine on threads for web.py: balls far apart across the
+  band are independent for many steps (light cone), so the band could be cut
+  into tiles of events with a ghost margin, like the old tiled stepper.
+- Measure and tune the GPU engine on real hardware: the wall scans are the
+  only global memory traffic per step; halving the bitmaps (cells have
+  x+y ≡ x−y mod 2) and prefetching the scan words would cut their latency.
 - The arcade's remaining features: angle from where the ball hits the paddle
   (needs a ball with more than one speed per axis), 8 brick rows, a 5-ball game.
 
@@ -222,5 +244,5 @@ and ~60 ms stepping on 16 tile threads.
 `SPEC.md` game rules · `oracle.py` reference game · `hw/` logic and lowering ·
 `plan.py`, `compile.py`, `layout.py`, `physics.py` compiler · `sim.py`, `cyl.py`
 Python simulators · `csim/bbm.c`, `fastsim.py` C simulator · `play.py`,
-`screen.py` terminal frontend · `web.py`, `web/index.html` browser frontend · `debug.py` fault finder · `difftest.py` differential test ·
+`screen.py` terminal frontend · `web.py`, `web/index.html` browser frontend, `web/engine.js` (CPU) and `web/gpu.js` (WebGPU) in-browser engines · `debug.py` fault finder · `difftest.py` differential test ·
 `DECISIONS.md` design log · `PROGRESS.md` work log.

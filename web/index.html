@@ -139,10 +139,10 @@ function runHere(squares) {  // static site: the machine runs in a worker, posti
     if (d.type === 'frame') onFrame(d); else if (d.type === 'pics') onPics(d); else if (d.type === 'fault') fault = d.error;
   };
   worker.onerror = e => { fault = e.message || 'the engine failed to start'; };
-  worker.postMessage({ type: 'init', meta: M, squares });
+  worker.postMessage({ type: 'init', meta: M, squares, cpu: /[?&]cpu\b/.test(location.search) });  // ?cpu: no WebGPU
   document.addEventListener('visibilitychange', () => worker.postMessage({ type: 'control', pause: document.hidden }));
   live = true;
-  $('live').textContent = '● running in your browser'; $('live').style.color = '#7dffb5';
+  $('live').textContent = '● starting in your browser…'; $('live').style.color = '#7dffb5';
 }
 
 function connect() {
@@ -174,6 +174,7 @@ function onFrame(f) {
   $('bricks').textContent = boot ? '–' : `${popcount(s.bricks)} / 32 · wall ${s.screen + 1} of 2`;
   $('spd').textContent = boot ? '–' : '▸'.repeat(s.speed + 1) + (s.small ? ' · small paddle' : '');
   $('frame').textContent = f.n;
+  if (STATIC && f.engine) $('live').textContent = '● running in your browser on the ' + f.engine;
   $('speed').innerHTML = `computed by the billiard balls in <b>${f.ms.toFixed(0)} ms</b> · <b>${f.fps.toFixed(1)}</b> frames/s`;
 }
 

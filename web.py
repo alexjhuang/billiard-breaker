@@ -252,17 +252,21 @@ def serve(host='127.0.0.1', port=8000, fps=20):
 
 def export(out):
     """A static copy of the page that runs the machine in the visitor's browser
-    (web/engine.js in a Web Worker) instead of on this server."""
+    (web/gpu.js on the GPU through WebGPU, else web/engine.js on the CPU, in a
+    Web Worker) instead of on this server."""
     import hashlib
     meta, walls = machine_info(hardware.load())
     engine = open(os.path.join(os.path.dirname(PAGE), 'engine.js'), 'rb').read()
+    gpu = open(os.path.join(os.path.dirname(PAGE), 'gpu.js'), 'rb').read()
     os.makedirs(out, exist_ok=True)
     page = open(PAGE).read().replace('<script>\n', '<script>window.STATIC_SITE = true</script>\n<script>\n', 1)
-    v = hashlib.sha1(meta + walls + engine).hexdigest()[:8]  # the page always loads data from its own build
+    v = hashlib.sha1(meta + walls + engine + gpu).hexdigest()[:8]  # the page always loads data from its own build
     for name in ('machine.json', 'walls.bin.gz', 'engine.js'):
         assert page.count(f"'{name}'") == 1, name
         page = page.replace(f"'{name}'", f"'{name}?v={v}'")
-    files = {'index.html': page.encode(), 'machine.json': meta, 'walls.bin.gz': walls, '.nojekyll': b'', 'engine.js': engine}
+    assert engine.count(b"'gpu.js'") == 1
+    engine = engine.replace(b"'gpu.js'", f"'gpu.js?v={v}'".encode())
+    files = {'index.html': page.encode(), 'machine.json': meta, 'walls.bin.gz': walls, '.nojekyll': b'', 'engine.js': engine, 'gpu.js': gpu}
     for name, data in files.items():
         with open(os.path.join(out, name), 'wb') as f:
             f.write(data)
