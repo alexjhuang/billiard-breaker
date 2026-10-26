@@ -381,3 +381,16 @@ packed layout) that is ~2 800 iterations a thread per dispatch, 634 dispatches
 a frame. Now a 32-row histogram with a prefix sum gives the cuts in a few
 dozen operations a thread. Exact (software adapter); speed on the card still
 unmeasured.
+
+## 2026-10-26 — tiles recut every 8 epochs: 34 → 27 ms a frame
+Profiling the tiled run on the packed machine: thread 0 computed for 1.6 ms
+and waited 16 ms a frame; the slowest tile did 3-4x the average work. The
+cuts were made once per frame from the balls at the frame start, which sit in
+the top ~4 000 rows; during the frame the action drifts down the band into
+what was one tile's 8 000-row range. Recutting every 8 epochs (a full reload
+of the tiles, ~2 ms a frame) takes 34 → 27 ms (37 frames/s on 16 threads).
+Measured and not adopted: weighting the cut by lanes vs falling balls, by
+measured events per tile, recutting every epoch or two (the reloads cost
+more than they save), 32-48 threads, 128/256-step epochs. What remains is a
+~3x per-epoch imbalance that is bursty, not regional: the lanes of a slot
+zone bump together, so each epoch's events sit in a few places.

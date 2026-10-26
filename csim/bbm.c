@@ -53,6 +53,7 @@ typedef struct World_ {
     int tiled, shared_walls; int64_t wlo, whi, tbase;
     struct World_ **tiles; int ntiles;
     int64_t *kx, *ky; int64_t nk, kcap;   /* a tile's kept particles after an epoch */
+
 } World;
 
 static inline int64_t mod(int64_t a, int64_t m) { int64_t r = a % m; return r < 0 ? r + m : r; }
@@ -653,6 +654,7 @@ static void *tile_worker(void *arg) {
 }
 
 #define HB 16  /* histogram bin width in v for the cuts */
+#define RECUT 8  /* epochs between recuts of the ranges (each a full reload of the tiles) */
 
 void world_run_tiles(World *w, int64_t t_end, int64_t nf, const int64_t *feeds,
                      int64_t nr, const int64_t *reads, uint8_t *out, int T, int64_t D) {
@@ -673,21 +675,25 @@ void world_run_tiles(World *w, int64_t t_end, int64_t nf, const int64_t *feeds,
     int64_t fi = 0, ri = 0;
     while (fi < nf && feeds[3 * fi] < w->t) fi++;
     while (ri < nr && reads[3 * ri] < w->t) ri++;
-    memset(hist, 0, nb * 8);   /* equal-count ranges from a coarse histogram of v, fixed for this call */
-    for (int64_t j = 0; j < n; j++) hist[(lx[j] - ly[j] - w->lo) / HB]++;
-    M.cuts[0] = w->lo; M.cuts[T] = w->hi + 1;
-    {
-        int64_t acc = 0; int k = 1;
-        for (int64_t b = 0; b < nb && k < T; b++) {
-            acc += hist[b];
-            while (k < T && acc * T >= n * k) M.cuts[k++] = w->lo + (b + 1) * HB;
-        }
-        for (; k < T; k++) M.cuts[k] = w->hi + 1;
-    }
     M.first = 1;
+    int64_t epoch = 0;
     while (w->t < t_end) {
         M.t0 = w->t; M.t1 = w->t + D < t_end ? w->t + D : t_end;
         M.lx = lx; M.ly = ly; M.n = n;
+        if (epoch++ % RECUT == 0) {   /* ranges of equal ball counts from a coarse histogram of v; the action
+                                       * drifts down the band during a frame, so recut now and then (a full
+                                       * reload). Weighting by measured events per tile was tried: no gain. */
+            memset(hist, 0, nb * 8);
+            for (int64_t j = 0; j < n; j++) hist[(lx[j] - ly[j] - w->lo) / HB]++;
+            M.cuts[0] = w->lo; M.cuts[T] = w->hi + 1;
+            int64_t acc = 0; int k = 1;
+            for (int64_t b = 0; b < nb && k < T; b++) {
+                acc += hist[b];
+                while (k < T && acc * T >= n * k) M.cuts[k++] = w->lo + (b + 1) * HB;
+            }
+            for (; k < T; k++) M.cuts[k] = w->hi + 1;
+            M.first = 1;
+        }
         M.fa = fi; while (fi < nf && feeds[3 * fi] < M.t1) fi++; M.fb = fi;
         M.ra = ri; while (ri < nr && reads[3 * ri] < M.t1) ri++; M.rb = ri;
         tbar(&M, &local);

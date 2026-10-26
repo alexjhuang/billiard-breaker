@@ -175,9 +175,9 @@ On threads (`play.py`, `web.py`: 16 by default, `--threads N`) the band is cut
 across (by x−y) into ranges of equal ball counts; each thread runs its range
 plus a light-cone margin of 2·64+4 rows as a private event-driven world for 64
 steps, keeps the balls that end in its range (exact, nothing moves faster than
-2 rows a step), and only the margins are refreshed between epochs. The gain is
-bounded by geometry: the live balls fill only ~2 200 rows of the band at a
-time, so the margins redo 1.7x the real machine's events (DECISIONS.md).
+2 rows a step), and only the margins are refreshed between epochs; the ranges
+are recut every 8 epochs as the action drifts down the band. The gain is
+bounded by a bursty ~3x imbalance between tiles within an epoch (DECISIONS.md).
 
 | Whole frame (u along the loop, v up the band; dark = mirrors) |
 |---|
@@ -191,8 +191,8 @@ right bring next-state values back up. `docs/slot.png` zooms in on one gate.
 
 | | |
 |---|---|
-| frame rate, `python3 play.py --bench 40 --threads 16` (the default) | **26 frames/s** (load average ~50) |
-| frame rate, `--threads 1` | 19 frames/s (53 ms per frame) |
+| frame rate, `python3 play.py --bench 40 --threads 16` (the default) | **34 frames/s** (38 with 32 threads; load average ~50) |
+| frame rate, `--threads 1` | 18 frames/s (55 ms per frame) |
 | in the browser, CPU engine (web/engine.js under Node) | 8.3 frames/s (121 ms per frame) |
 | in the browser, GPU engine (web/gpu.js, 16 tiles) | not measured here (no GPU); exact on the software adapter; the one-workgroup version did 0.7–2 frames/s on an RTX 5060 Ti |
 | world | cylinder 23 596 × 11 941 (u × x−y): 282 M cells |
@@ -236,9 +236,9 @@ and ~60 ms stepping on 16 tile threads.
   values back up: the brick and score bits are produced ~260 lines deep (their
   data must be copied below the deep decode tree's controls) and owe ~370
   slots each (1.43 a line). The 28 lattice rows every slot costs are 42% of P.
-- Threads give 2.5x, not 16x: the light-cone margins redo 1.7x the real
-  events because the live balls occupy a narrow part of the band, and the
-  epoch barriers (1 116 a frame) cost on a shared machine.
+- Threads give 2x, not 16x: within an epoch the slowest tile does ~3x the
+  average work (the lanes of a slot zone bump together, so each epoch's
+  events sit in a few places), and the margins redo part of the work.
 - The arcade rules cost 60%: 776 gates instead of 488, 184 lines instead of
   150, so P grew from 43 456 to 71 396 steps and the frame rate halved. At
   the base speed the ball moves every other frame, so at ~8 frames/s it
