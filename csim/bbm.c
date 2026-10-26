@@ -26,6 +26,11 @@
 
 #define PAD 2
 #define INF INT64_MAX
+#define CQ 65536  /* calendar queue span in steps (a power of two) */
+#define CQREF 4096 /* the far list is refiled when cbase crosses a multiple of this */
+/* entries at or after this step live on the far list; the split moves only at refiles, so a
+ * bucket entry is always earlier than every far entry */
+#define CQLIM(w) (((w)->cbase & ~(int64_t)(CQREF - 1)) + CQ)
 #define NKIND 6
 
 static const int DX[4] = {1, -1, 1, -1}, DY[4] = {1, 1, -1, -1};   /* d = rx + 2*ry: SE SW NE NW */
@@ -43,8 +48,11 @@ typedef struct World_ {
     int32_t *ver, *mark;
     int32_t *nxt[3], *prv[3], *bk[3];
     int32_t *head[NKIND]; uint64_t *nbm[NKIND]; int64_t nb[NKIND];   /* bucket heads and a bit per non-empty bucket */
-    /* heap of (time, id, version) */
-    int64_t *ht; int32_t *hid, *hver; int64_t hn, hcap;
+    /* calendar queue of (time, id, version): a ring of CQ time buckets of entry lists,
+     * plus an overflow list for events further ahead than the ring spans */
+    int64_t *ct; int32_t *cid, *cver, *cnext; int32_t cfree, ccap; int64_t cn;
+    int32_t *cbuck; int64_t cbase;      /* cbuck[t % CQ]: first entry due at step t (t in [cbase, CQLIM)) */
+    int32_t cfar;                       /* entries due at or after CQLIM */
     int32_t *grp; int64_t gcap;
     int64_t t;
     int broken;
@@ -86,7 +94,7 @@ void world_free(World *w) {
     for (int k = 0; k < NKIND; k++) { free(w->head[k]); free(w->nbm[k]); }
     for (int j = 0; j < 3; j++) { free(w->nxt[j]); free(w->prv[j]); free(w->bk[j]); }
     free(w->x); free(w->y); free(w->t0); free(w->ev); free(w->d); free(w->alive); free(w->ver); free(w->mark);
-    free(w->ht); free(w->hid); free(w->hver); free(w->grp); free(w);
+    free(w->ct); free(w->cid); free(w->cver); free(w->cnext); free(w->cbuck); free(w->grp); free(w);
 }
 
 static void grow(World *w, int32_t need) {
@@ -167,35 +175,75 @@ static int64_t wall_steps(World *w, int32_t i) {
     return q < 0 ? exit : imin(exit, (vv - q - 1) >> 1);
 }
 
-/* ------------------------------------------------------------------ heap */
-static void hpush(World *w, int64_t t, int32_t id) {
-    if (w->hn == w->hcap) {
-        w->hcap = w->hcap ? 2 * w->hcap : 4096;
-        w->ht = realloc(w->ht, w->hcap * 8); w->hid = realloc(w->hid, w->hcap * 4); w->hver = realloc(w->hver, w->hcap * 4);
-    }
-    int64_t k = w->hn++;
-    while (k > 0) {
-        int64_t p = (k - 1) >> 1;
-        if (w->ht[p] <= t) break;
-        w->ht[k] = w->ht[p]; w->hid[k] = w->hid[p]; w->hver[k] = w->hver[p];
-        k = p;
-    }
-    w->ht[k] = t; w->hid[k] = id; w->hver[k] = w->ver[id];
+/* ------------------------------------------------------------------ calendar queue */
+static void cq_init(World *w) {
+    if (w->cbuck) return;
+    w->cbuck = malloc(CQ * 4); memset(w->cbuck, -1, CQ * 4);
+    w->cfar = -1; w->cfree = -1; w->cbase = w->t;
 }
 
-static void hpop(World *w) {
-    int64_t n = --w->hn;
-    if (!n) return;
-    int64_t t = w->ht[n]; int32_t id = w->hid[n], ver = w->hver[n], k = 0;
-    while (1) {
-        int64_t c = 2 * k + 1;
-        if (c >= n) break;
-        if (c + 1 < n && w->ht[c + 1] < w->ht[c]) c++;
-        if (w->ht[c] >= t) break;
-        w->ht[k] = w->ht[c]; w->hid[k] = w->hid[c]; w->hver[k] = w->hver[c];
-        k = c;
+static inline int32_t cq_alloc(World *w) {
+    if (w->cfree >= 0) { int32_t e = w->cfree; w->cfree = w->cnext[e]; return e; }
+    if (w->cn == w->ccap) {
+        w->ccap = w->ccap ? 2 * w->ccap : 4096;
+        w->ct = realloc(w->ct, w->ccap * 8); w->cid = realloc(w->cid, w->ccap * 4);
+        w->cver = realloc(w->cver, w->ccap * 4); w->cnext = realloc(w->cnext, w->ccap * 4);
     }
-    w->ht[k] = t; w->hid[k] = id; w->hver[k] = ver;
+    return (int32_t)w->cn++;
+}
+
+static void hpush(World *w, int64_t t, int32_t id) {
+    cq_init(w);
+    int32_t e = cq_alloc(w);
+    w->ct[e] = t; w->cid[e] = id; w->cver[e] = w->ver[id];
+    if (t < CQLIM(w)) { int32_t *b = &w->cbuck[t & (CQ - 1)]; w->cnext[e] = *b; *b = e; }
+    else { w->cnext[e] = w->cfar; w->cfar = e; }
+}
+
+/* move the ring's base to step t (t >= cbase): buckets passed are empty by construction */
+static void cq_advance(World *w, int64_t t) {
+    if (t < w->cbase) return;
+    if (t - w->cbase >= CQ) {   /* a long idle stretch: refile everything */
+        int32_t all = w->cfar; w->cfar = -1;
+        for (int64_t k = 0; k < CQ; k++) if (w->cbuck[k] >= 0) {  /* (empty in practice) */
+            int32_t e = w->cbuck[k]; w->cbuck[k] = -1;
+            while (e >= 0) { int32_t n = w->cnext[e]; w->cnext[e] = all; all = e; e = n; }
+        }
+        w->cbase = t;
+        while (all >= 0) {
+            int32_t n = w->cnext[all];
+            if (w->ct[all] < CQLIM(w)) { int32_t *b = &w->cbuck[w->ct[all] & (CQ - 1)]; w->cnext[all] = *b; *b = all; }
+            else { w->cnext[all] = w->cfar; w->cfar = all; }
+            all = n;
+        }
+        return;
+    }
+    while (w->cbase < t) {   /* refile far entries that come into the span */
+        w->cbase++;
+        if (w->cfar >= 0 && (w->cbase & (CQREF - 1)) == 0) {  /* the split moves: refile */
+            int32_t e = w->cfar, keep = -1;
+            while (e >= 0) {
+                int32_t n = w->cnext[e];
+                if (w->ct[e] < CQLIM(w)) { int32_t *b = &w->cbuck[w->ct[e] & (CQ - 1)]; w->cnext[e] = *b; *b = e; }
+                else { w->cnext[e] = keep; keep = e; }
+                e = n;
+            }
+            w->cfar = keep;
+        }
+    }
+}
+
+/* the earliest step with an entry at or before t_end - 1, or INF (scanning from cbase) */
+static int64_t cq_next(World *w, int64_t t_end) {
+    cq_init(w);
+    for (int64_t t = w->cbase; t < t_end && t < CQLIM(w); t++)
+        if (w->cbuck[t & (CQ - 1)] >= 0) return t;
+    if (w->cfar >= 0) {   /* nothing in the span: the far list may hold the next one */
+        int64_t best = INF; int32_t e = w->cfar;
+        while (e >= 0) { if (w->ct[e] < best) best = w->ct[e]; e = w->cnext[e]; }
+        if (best < t_end) { cq_advance(w, best); return best; }
+    }
+    return INF;
 }
 
 /* ------------------------------------------------------------------ index */
@@ -418,12 +466,17 @@ static void process_block(World *w, int64_t T, int32_t *ids, int m) {
 
 /* run all events at steps < t_end */
 static void run_to(World *w, int64_t t_end) {
-    while (w->hn && w->ht[0] < t_end) {
-        int64_t T = w->ht[0];
+    cq_init(w);
+    cq_advance(w, w->t);
+    for (;;) {
+        int64_t T = cq_next(w, t_end);
+        if (T == INF) break;
+        cq_advance(w, T);
         int m = 0;
-        while (w->hn && w->ht[0] == T) {  /* every live event at this step */
-            int32_t id = w->hid[0], ver = w->hver[0];
-            hpop(w);
+        int32_t *b = &w->cbuck[T & (CQ - 1)], e = *b; *b = -1;
+        while (e >= 0) {  /* every live event at this step */
+            int32_t id = w->cid[e], ver = w->cver[e], n = w->cnext[e];
+            w->cnext[e] = w->cfree; w->cfree = e; e = n;
             if (!w->alive[id] || ver != w->ver[id] || w->mark[id] == (int32_t)(T & 0x7fffffff)) continue;
             w->mark[id] = (int32_t)(T & 0x7fffffff);
             if (m == w->gcap) { w->gcap = w->gcap ? 2 * w->gcap : 64; w->grp = realloc(w->grp, w->gcap * 4 * 2); }
@@ -546,7 +599,8 @@ static World *tile_new(World *m) {
 /* remove every particle (index and heap included); the world is then empty at time t */
 static void world_clear(World *w, int64_t t) {
     for (int32_t i = 0; i < w->top; i++) if (w->alive[i]) { index_del(w, i); w->alive[i] = 0; w->ver[i]++; }
-    w->top = 0; w->nalive = 0; w->free_head = -1; w->hn = 0; w->t = t;
+    w->top = 0; w->nalive = 0; w->free_head = -1; w->t = t;
+    if (w->cbuck) { memset(w->cbuck, -1, CQ * 4); w->cfar = -1; w->cfree = -1; w->cn = 0; w->cbase = t; }
 }
 
 /* every particle's position at time t (canonical); returns the count */

@@ -394,3 +394,13 @@ measured events per tile, recutting every epoch or two (the reloads cost
 more than they save), 32-48 threads, 128/256-step epochs. What remains is a
 ~3x per-epoch imbalance that is bursty, not regional: the lanes of a slot
 zone bump together, so each epoch's events sit in a few places.
+
+## 2026-10-26: event queue is a calendar queue, not a binary heap
+The serial profile (rdtsc, 72 ms/frame instrumented) put heap pops at 9.3 ms and the
+partner lookups at 17 ms. Since 99.6% of steps carry an event, the queue is replaced by a
+ring of 65536 time buckets (singly linked entry lists, free list, versions as before) with an
+overflow list for events further ahead; the bucket/overflow split moves only when the base
+crosses a 4096-step boundary, so every bucket entry precedes every overflow entry and the
+order stays exact. Popping a step is draining one bucket; pushing is O(1).
+Measured (play.py --bench 60): serial 18 -> 26.6 fps; 16 threads 34 -> 40.3; 32 threads
+38 -> 43.6. Exact: full suite (46 tests) including the traced tiled runs and difftest.
