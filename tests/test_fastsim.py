@@ -75,7 +75,8 @@ def test_traced_runs_are_exact():
         recs = []
         for inp in keys:
             s = r.done_until
-            got = r.feed(inp, [(s + 5000, 16), (s + 20000, 1), (s + 41000, 3)] if traced else ())
+            P = hw['P']
+            got = r.feed(inp, [(s + P // 8, 16), (s + P // 2, 1), (s + P - 400, 3)] if traced else ())
             for T, counts, uv in got or ():
                 assert len(counts) in (16, 1, 3) and sum(counts) * 2 == len(uv)
                 recs.append((T, counts, sorted(zip(uv[0::2], uv[1::2]))))

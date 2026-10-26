@@ -146,7 +146,8 @@ games are handled by gating every cause of change; the brick decoder is a
 switch tree). hw/lower.py turns it into switch gates. plan.py gives each gate a
 slot along the loop and every signal a line, and enforces that messengers
 fall: a gate's data lane must sit below its controls, inserting copies where
-needed. Gates are list-scheduled into slots, longest remaining path first.
+needed. Gates are list-scheduled into slots, longest remaining path first
+(plus a bonus for gates that free lanes, which keeps values shallower).
 Next-state values therefore drift down the band and are lifted back to their
 state lines as soon as they are final; the lifts' debt is paid in a tail of
 narrow idle slots. compile.py turns slots into mirrors and the per-frame ball
@@ -194,13 +195,13 @@ right bring next-state values back up. `docs/slot.png` zooms in on one gate.
 | frame rate, `--threads 1` | 19 frames/s (53 ms per frame) |
 | in the browser, CPU engine (web/engine.js under Node) | 8.3 frames/s (121 ms per frame) |
 | in the browser, GPU engine (web/gpu.js, 16 tiles) | not measured here (no GPU); exact on the software adapter; the one-workgroup version did 0.7–2 frames/s on an RTX 5060 Ti |
-| world | cylinder 25 060 × 11 941 (u × x−y): 299 M cells |
-| frame period P | 42 756 automaton steps (71 396 with one gate per slot) |
+| world | cylinder 23 596 × 11 941 (u × x−y): 282 M cells |
+| frame period P | 40 564 automaton steps (71 396 with one gate per slot) |
 | events per frame | 251 k blocks with more than a lone ball; 334 k ball reschedules (518 k / 686 k with one gate per slot); ~427 balls moving on average, 620 at most |
 | gates | 776 switch gates + 87 copies = 863 messengers per frame |
-| slots | 632 (3 input, 277 gate slots holding up to 4 gates each, 4 lift, 348 catch-up) |
-| mirrors | 130 786 bars (1.0 M wall cells) |
-| balls added per frame | 1261 (messengers, power, 3 key inputs) |
+| slots | 606 (3 input, 265 gate slots holding up to 4 gates each, a few lift, ~335 catch-up) |
+| mirrors | 125 741 bars (1.0 M wall cells) |
+| balls added per frame | 1271 (messengers, power, 3 key inputs) |
 | lanes alive | ≤ 294 lines; ~427 moving balls on average |
 | tiles (layout primitives placed) | 863 messengers, 863 splitters, 396 power/input sources, 464 drops, 39 898 retimes (an up-jog and a down-jog each) |
 
@@ -230,10 +231,11 @@ and ~60 ms stepping on 16 tile threads.
 - The event-driven simulator's cost is set by the layout, not by free flight:
   every lane detours in every slot, so a ball has an event every ~32 steps.
   Shortening the frame means fewer slots, i.e. fewer idle detours; up to four
-  gates per slot took P from 71 396 to 42 756.
-- The frame's tail (348 idle slots, 30% of P) is the debt of lifting next-state
-  values back up: a value produced 270 lines deep owes ~390 slots (1.43 a line).
-  The 28 lattice rows every slot costs are 41% of P.
+  gates per slot took P from 71 396 to 40 564.
+- The frame's tail (~340 idle slots, 30% of P) is the debt of lifting next-state
+  values back up: the brick and score bits are produced ~260 lines deep (their
+  data must be copied below the deep decode tree's controls) and owe ~370
+  slots each (1.43 a line). The 28 lattice rows every slot costs are 42% of P.
 - Threads give 2.5x, not 16x: the light-cone margins redo 1.7x the real
   events because the live balls occupy a narrow part of the band, and the
   epoch barriers (1 116 a frame) cost on a shared machine.

@@ -112,10 +112,16 @@ class Plan:
         for i in reversed(range(len(net.ops))):
             height[i] = 1 + max([height[j] for j in users.get(i, [])], default=0)
         pending = [(height[i], i, op) for i, op in enumerate(net.ops)]
+
+        def prio(e):  # longest remaining path, plus 6 per lane the op frees (fewer live lanes: values stay shallower)
+            op = e[2]
+            frees = (1 if op.data is not None else 0) + sum(1 for c in set(op.ctrls) if self.uses.get(c) == 1)
+            return -(e[0] + 6 * frees)
+
         while pending:
             self.cur = dict(places=[], lanes=set(), lines=set(), levels=set())
             rest = []
-            for h, i, op in sorted(pending, key=lambda e: -e[0]):
+            for h, i, op in sorted(pending, key=prio):
                 if len(self.cur['places']) >= self.MAXL:
                     rest.append((h, i, op))
                     continue

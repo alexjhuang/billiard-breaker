@@ -37,8 +37,8 @@ Source of truth between sessions. Trust `python3 tests/run_all.py` over this fil
 ## Current
 2026-10-26 (pack): several gates per slot (DECISIONS.md): plan.py list-schedules
 up to 4 ops per slot at lattice levels (lift resonance rule), compile.py lays out
-multi-op slots, idle slots are 8 wide. P 71396 -> 42756 (632 slots; messengers first, splitters after), exact (full
-suite incl. difftest). C engine 8.7 -> 19 frames/s serial, 26 on 16 threads;
+multi-op slots, idle slots are 8 wide. P 71396 -> 40564 (606 slots; messengers first, splitters after; priority
+height + 6*lanes freed), exact (full suite incl. difftest). C engine 8.7 -> 19 frames/s serial, 26 on 16 threads;
 JS 3.7 -> 8.3 under node. Tiles help little now (51 -> 37 ms).
 Band deeper (294 lines, 11 941 rows). Next: the 321-slot lift tail (39% of P).
 2026-10-26: GPU engine rounds 3-4 (DECISIONS.md): on an RTX 5060 Ti the single

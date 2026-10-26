@@ -361,3 +361,11 @@ Also measured (2026-10-26): a 26-row lattice (ROW 26, ACT_C 8) fails the
 layout tests; scheduling ops whose lanes already sit at a free level first
 (to save pre-bump columns) is exact but worse (694 slots, P 44 700): the
 longest-remaining-path priority matters more.
+
+## 2026-10-26 — scheduling priority: path length plus lanes freed
+Among ready ops, priority = longest remaining path + 6 per lane the op frees
+(its data, controls at their last use). Measured on the game (plan only, then
+difftest): weights 0/2/4/6/8/12/20 give P 42 756 / 41 702 / 40 932 / 40 564 /
+41 596 / 41 994 / 42 496; "frees first" and "shallowest first" are worse. The
+tail does not move (~340 slots): the brick and score bits are final at slots
+237–278 of 280 and lifted at once, 250–270 lines deep, debt 350–385 each.
