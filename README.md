@@ -69,16 +69,18 @@ To use it from another computer: `ssh -L 8000:localhost:8000 <host>`, or
 machine pauses while nobody is connected.
 
 **Static version (GitHub Pages).** `python3 web.py --export DIR` writes the
-same page plus the hardware as data and two engines that run the machine in the
-visitor's browser, in a Web Worker: `web/engine.js`, a JavaScript port of the C
-simulator, on one CPU core (the default), and `web/gpu.js` on the GPU through
-WebGPU (the button, or `?gpu`; experimental). The page says which one is
-running and how long a frame takes, on the GPU too when the browser has
-timestamp queries.
+same page plus the hardware as data and three engines that run the machine in
+the visitor's browser, in a Web Worker: `web/bbm.wasm`, the C simulator
+compiled to WebAssembly (`csim/build_wasm.sh`, needs the wasi-sdk; wrapped by
+`web/wasm.js`), on one CPU core (the default); `web/engine.js`, a JavaScript
+port of the same simulator (`?js`, and the fallback without WebAssembly); and
+`web/gpu.js` on the GPU through WebGPU (the button, or `?gpu`; experimental).
+The page says which one is running and how long a frame takes, on the GPU too
+when the browser has timestamp queries.
 
-- *CPU.* 3.7 frames/s under Node on this machine (274 ms per frame; the old
-  stepping engine took 171 ms per frame on the old, 40% smaller machine).
-  tests/test_engine.py checks it against the C simulator.
+- *CPU.* WebAssembly: 53 ms per frame under Node on this machine (19 frames/s;
+  the native C simulator takes 37 ms on one core). JavaScript: 136 ms per
+  frame. tests/test_engine.py checks both against the C simulator.
 - *GPU.* The C simulator's tiles on the GPU: 16 workgroups of 64 threads, each
   holding the balls of a range of x−y plus a light-cone margin, step them 64
   times per dispatch (the Margolus rule on each ball's block, all balls at

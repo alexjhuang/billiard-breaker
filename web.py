@@ -253,21 +253,28 @@ def serve(host='127.0.0.1', port=8000, threads=16, fps=30):
 
 def export(out):
     """A static copy of the page that runs the machine in the visitor's browser
-    (web/gpu.js on the GPU through WebGPU, else web/engine.js on the CPU, in a
-    Web Worker) instead of on this server."""
+    (web/wasm.js, the C engine as WebAssembly, in a Web Worker; web/engine.js
+    is the JavaScript fallback and web/gpu.js the WebGPU engine) instead of on
+    this server."""
     import hashlib
     meta, walls = machine_info(hardware.load())
-    engine = open(os.path.join(os.path.dirname(PAGE), 'engine.js'), 'rb').read()
-    gpu = open(os.path.join(os.path.dirname(PAGE), 'gpu.js'), 'rb').read()
+    web = os.path.dirname(PAGE)
+    engine, gpu, wasmjs = (open(os.path.join(web, f), 'rb').read() for f in ('engine.js', 'gpu.js', 'wasm.js'))
+    wasm = open(os.path.join(web, 'bbm.wasm'), 'rb').read()
+    src = hashlib.sha1(open(os.path.join(os.path.dirname(web), 'csim', 'bbm.c'), 'rb').read()).hexdigest()
+    if open(os.path.join(web, 'bbm.wasm.src')).read().strip() != src:
+        print('warning: web/bbm.wasm is older than csim/bbm.c; rebuild it with csim/build_wasm.sh', file=sys.stderr)
     os.makedirs(out, exist_ok=True)
     page = open(PAGE).read().replace('<script>\n', '<script>window.STATIC_SITE = true</script>\n<script>\n', 1)
-    v = hashlib.sha1(meta + walls + engine + gpu).hexdigest()[:8]  # the page always loads data from its own build
+    v = hashlib.sha1(meta + walls + engine + gpu + wasmjs + wasm).hexdigest()[:8]  # the page always loads data from its own build
     for name in ('machine.json', 'walls.bin.gz', 'engine.js'):
         assert page.count(f"'{name}'") == 1, name
         page = page.replace(f"'{name}'", f"'{name}?v={v}'")
-    assert engine.count(b"'gpu.js'") == 1
-    engine = engine.replace(b"'gpu.js'", f"'gpu.js?v={v}'".encode())
-    files = {'index.html': page.encode(), 'machine.json': meta, 'walls.bin.gz': walls, '.nojekyll': b'', 'engine.js': engine, 'gpu.js': gpu}
+    for name in ('gpu.js', 'wasm.js', 'bbm.wasm'):
+        assert engine.count(f"'{name}'".encode()) == 1, name
+        engine = engine.replace(f"'{name}'".encode(), f"'{name}?v={v}'".encode())
+    files = {'index.html': page.encode(), 'machine.json': meta, 'walls.bin.gz': walls, '.nojekyll': b'', 'engine.js': engine, 'gpu.js': gpu,
+             'wasm.js': wasmjs, 'bbm.wasm': wasm}
     for name, data in files.items():
         with open(os.path.join(out, name), 'wb') as f:
             f.write(data)

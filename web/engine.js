@@ -460,9 +460,9 @@ class Machine {
 }
 
 // ---------------------------------------------------------------- Web Worker: the frame loop of web.py
-// The machine runs on the GPU (web/gpu.js, WebGPU) when it can, else here on the CPU.
+// The machine runs as WebAssembly (web/wasm.js) by default, on the GPU (web/gpu.js) with ?gpu, in JavaScript (Machine above) with ?js.
 if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScope) {
-  const PICS = 3, CLIP = 16, CLIP_EVERY = 0.3, FPS_CAP = 30;
+  const PICS = 3, CLIP = 16, CLIP_EVERY = 0.3, FPS_CAP = 60;
   let M = null, engine = '', keys = { left: 0, right: 0, reset: 1 }, sweep = 8, phase = 0, fps = 0, period = 0, lastClip = -1;
   let tPrev = null, tNext = 0, paused = false, timer = null, busy = false;
   const now = () => performance.now() / 1000;
@@ -504,7 +504,14 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
         M = await new GpuMachine(d.meta, d.squares, { spin: d.spin, tiles: d.tiles, epoch: d.epoch }).init();
         engine = 'GPU · ' + M.info + (d.spin ? ` · ${d.spin} spinners` : '');
       } catch (e) { M = null; engine = 'CPU (no WebGPU: ' + String(e).replace(/^Error: /, '') + ')'; }
-    } else engine = 'CPU';
+    } else if (!d.js) {  // the C engine as WebAssembly, about twice the speed of Machine
+      try {
+        importScripts('wasm.js');
+        const bytes = await (await fetch('bbm.wasm')).arrayBuffer();
+        M = await new WasmMachine(d.meta, d.squares, bytes).init();
+        engine = 'CPU (WebAssembly)';
+      } catch (e) { M = null; engine = 'CPU (JavaScript; no WebAssembly: ' + String(e).replace(/^Error: /, '') + ')'; }
+    } else engine = 'CPU (JavaScript)';
     if (!M) M = new Machine(d.meta, d.squares);
     tNext = now(); loop();
   };

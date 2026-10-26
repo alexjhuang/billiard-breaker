@@ -569,6 +569,7 @@ int64_t world_cells(World *w, int64_t *xy, int64_t cap) {
  * particles are exact. Feeds go to every tile whose window holds them; a
  * read is answered by the tile owning its cell. Between epochs the master
  * is just a list of positions; it is rebuilt as a world at the end. */
+#ifndef BBM_NO_THREADS   /* the WebAssembly build (web/) has no threads */
 #include <pthread.h>
 #include <stdatomic.h>
 
@@ -780,3 +781,4 @@ void world_run_tiles(World *w, int64_t t_end, int64_t nf, const int64_t *feeds,
     for (int64_t j = 0; j < n; j++) schedule(w, new_particle(w, lx[j], ly[j], w->t));   /* the master is a world again */
     free(lx); free(ly); free(M.cuts); free(M.loff); free(M.lcuts); free(hist);
 }
+#endif

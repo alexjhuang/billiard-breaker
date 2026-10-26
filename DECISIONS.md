@@ -404,3 +404,12 @@ crosses a 4096-step boundary, so every bucket entry precedes every overflow entr
 order stays exact. Popping a step is draining one bucket; pushing is O(1).
 Measured (play.py --bench 60): serial 18 -> 26.6 fps; 16 threads 34 -> 40.3; 32 threads
 38 -> 43.6. Exact: full suite (46 tests) including the traced tiled runs and difftest.
+
+## 2026-10-26: the site's CPU engine is the C simulator compiled to WebAssembly
+web/engine.js (JavaScript) takes 136 ms a frame under Node here; csim/bbm.c built with the
+wasi-sdk (clang, `-O3 -DBBM_NO_THREADS -mexec-model=reactor`, no imports, 66 KB) takes 53 ms
+through web/wasm.js, the same interface as Machine; native is 37 ms. The wasm binary is
+committed (web/bbm.wasm, web/bbm.wasm.src records the source hash; web.py --export warns when
+it is stale) because the toolchain is not a project dependency. tests/test_engine.py checks
+it against the C simulator frame by frame (states, flags, recorded balls). The JavaScript
+engine stays as the fallback (`?js`). The worker's frame cap goes from 30 to 60 frames/s.

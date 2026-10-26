@@ -155,3 +155,7 @@ rows = 16 mod 32 so every unintended crossing has |g|>=16.
 ## Dead ends
 - Single-particle balls: no 90° static mirror exists (brute force, see DECISIONS.md).
 - Perpendicular dimer collisions: always shatter the dimers.
+
+2026-10-26: C engine as WebAssembly on the site (default CPU engine): 53 ms a frame under
+Node vs 136 ms for the JavaScript engine; exact (tests/test_engine.py). Server path: calendar
+queue (serial 26.6 fps) and neighbour-segment tile setup (16 threads 42 fps, 32 threads 46).
