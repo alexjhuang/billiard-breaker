@@ -245,3 +245,26 @@ for an empty column instead of ~240; and the next feed/read times are cached.
 Exact (tests/test_gpu.py). Expected now: ~1 global latency a step (most steps
 have a rescan somewhere), so 50-100 ms a frame on that card; the next lever
 is issuing the rescan loads in the previous step so they overlap the barriers.
+
+## 2026-10-26 — GPU engine, round three: 2 fps on the 5060 Ti after the summaries
+Still 7 µs a step, so the step itself was restructured and instrumented:
+- GPU timestamps (timestamp-query): the page now shows the GPU time of a
+  frame next to the wall time, so shader cost, host overhead and low clocks
+  can be told apart.
+- Two barriers a step instead of five: three cell sets rotate (step t reads
+  t % 3, writes (t+1) % 3, clears (t+2) % 3), the picture counters are
+  storage atomics, feeds and reads are thread 0's work in the first phase and
+  a fed ball is scanned by thread 0 itself.
+- Prefetch: a ball that turned fetches the words of its next scan in the
+  same phase (after the rule), so their latency overlaps the barriers and the
+  rescan in the next phase usually touches no memory.
+- Workgroup memory is 22.5 KB now, so the 32 KB limit is requested where the
+  adapter has it (all desktop GPUs); otherwise 448 slots and 512-entry sets.
+- ?spin=N runs N busy workgroups beside the machine: a diagnostic for the
+  hypothesis that one workgroup on one of 36 SMs leaves the card at idle
+  clocks (a 3-5x factor that would explain much of the gap).
+- Found on the way: 9 storage buffers exceed the default 8 per stage; the
+  pipeline was invalid and the previous error path did not say so (now
+  createComputePipelineAsync). The two summaries share one buffer.
+Exact (tests/test_gpu.py; the software adapter is now ~2 min a frame, it
+pays for every load). Numbers from the real card decide the next step.

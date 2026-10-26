@@ -18,7 +18,7 @@
       const inp = { left: k % 7 === 0 ? 1 : 0, right: k % 5 === 0 ? 1 : 0, reset: k === 0 ? 1 : 0 };
       const traces = k % 3 === 0 ? [[16, 16], [148, 1], [297, 1]] : k % 3 === 1 ? [[446, 1], [594, 1], [743, 1]] : [[5000, 16], [20000, 1], [P - 1, 3]];
       const a = J.frame(inp, traces), t1 = performance.now(), b = await G.frame(inp, traces);
-      times.push(Math.round(performance.now() - t1));
+      times.push(Math.round(performance.now() - t1)); if (b.gpuMs != null) (out.gpuMs = out.gpuMs || []).push(Math.round(b.gpuMs));
       if (JSON.stringify(a.state) !== JSON.stringify(b.state) || a.win !== b.win || a.lose !== b.lose) diffs.push({ k, js: a.state, gpu: b.state });
       a.pics.forEach((pa, i) => {
         const pb = b.pics[i], sa = [], sb = [];

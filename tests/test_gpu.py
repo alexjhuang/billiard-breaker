@@ -1,6 +1,6 @@
 """web/gpu.js (the WebGPU engine of the static site) == web/engine.js: same states,
 flags and recorded balls, frame for frame. Runs tests/gpu_check.html in headless
-Chromium on its software WebGPU adapter (slow: ~30 s a frame), so it needs node
+Chromium on its software WebGPU adapter (slow: ~2 min a frame), so it needs node
 and a Chromium (CHROME, or playwright's under ~/.cache); skipped otherwise."""
 import json
 import os
@@ -46,8 +46,8 @@ def test_gpu_engine_matches_js_engine():
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         try:
             url = f'http://127.0.0.1:{srv.server_address[1]}/gpu_check.html?frames=2'
-            out = subprocess.run([node, str(ROOT / 'tests' / 'cdp_title.js'), url, '150', *FLAGS],
-                                 capture_output=True, text=True, timeout=600, env={**os.environ, 'CHROME': chromium()}).stdout
+            out = subprocess.run([node, str(ROOT / 'tests' / 'cdp_title.js'), url, '330', *FLAGS],
+                                 capture_output=True, text=True, timeout=900, env={**os.environ, 'CHROME': chromium()}).stdout
         finally:
             srv.shutdown()
     res = json.loads(out.strip().splitlines()[-1])

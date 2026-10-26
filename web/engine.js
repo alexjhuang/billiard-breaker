@@ -488,7 +488,8 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
       const r = await M.frame(inp, pictureTimes()), ms = 1000 * (now() - t0);
       if (tPrev !== null) { period = fps ? .8 * period + .2 * (t0 - tPrev) : t0 - tPrev; fps = 1 / period; }
       tPrev = t0;
-      postMessage({ type: 'frame', n, state: r.state, win: r.win, lose: r.lose, inp, ms: Math.round(ms * 10) / 10, fps: Math.round(fps * 100) / 100, engine });
+      postMessage({ type: 'frame', n, state: r.state, win: r.win, lose: r.lose, inp, ms: Math.round(ms * 10) / 10, fps: Math.round(fps * 100) / 100, engine,
+                    gpuMs: r.gpuMs == null ? null : Math.round(r.gpuMs * 10) / 10 });
       postMessage({ type: 'pics', n, P: M.P, sweep, pics: r.pics }, r.pics.map(q => q.raw.buffer));
       timer = paused ? null : setTimeout(loop, Math.max(0, 1000 * (tNext - now())));
     } catch (e) {
@@ -500,8 +501,8 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
     if (!d.cpu) {
       try {
         importScripts('gpu.js');
-        M = await new GpuMachine(d.meta, d.squares).init();
-        engine = 'GPU · ' + M.info;
+        M = await new GpuMachine(d.meta, d.squares, { spin: d.spin }).init();
+        engine = 'GPU · ' + M.info + (d.spin ? ` · ${d.spin} spinners` : '');
       } catch (e) { M = null; engine = 'CPU (no WebGPU: ' + String(e).replace(/^Error: /, '') + ')'; }
     } else engine = 'CPU';
     if (!M) M = new Machine(d.meta, d.squares);
