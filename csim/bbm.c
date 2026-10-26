@@ -60,6 +60,7 @@ typedef struct World_ {
      * only blocks the window edges cannot have reached yet */
     int tiled, shared_walls; int64_t wlo, whi, tbase;
     struct World_ **tiles; int ntiles;
+    struct TP_ *pool;                                    /* the tile threads (world_run_tiles), parked between calls */
     int64_t *kx, *ky; int64_t nk, kcap;   /* a tile's kept particles after an epoch */
 
 } World;
@@ -87,8 +88,13 @@ World *world_new(int64_t U, int64_t lo, int64_t hi) {
     return w;
 }
 
+static void pool_free(struct TP_ *M);
+
 void world_free(World *w) {
     for (int k = 0; k < w->ntiles; k++) world_free(w->tiles[k]);
+#ifndef BBM_NO_THREADS
+    if (w->pool) pool_free(w->pool);
+#endif
     free(w->tiles); free(w->kx); free(w->ky);
     if (!w->shared_walls) { free(w->wu); free(w->wv); }
     for (int k = 0; k < NKIND; k++) { free(w->head[k]); free(w->nbm[k]); }
@@ -573,13 +579,14 @@ int64_t world_cells(World *w, int64_t *xy, int64_t cap) {
 #include <pthread.h>
 #include <stdatomic.h>
 
-typedef struct {
+typedef struct TP_ {
     World *w; int T; int64_t t0, t1; uint8_t *out;
     const int64_t *feeds, *reads; int64_t fa, fb, ra, rb;   /* this epoch's feeds / reads */
     int64_t *cuts; int first;                               /* T + 1 range ends in v; first epoch of the call */
     const int64_t *lx, *ly; int64_t n;                      /* the particle list at t0 */
     int64_t *loff, *lcuts;                                  /* the list is in T segments: entries [loff[k], loff[k+1]) have v in [lcuts[k], lcuts[k+1]) */
-    _Alignas(64) atomic_int count; _Alignas(64) atomic_int sense; int stop;
+    _Alignas(64) atomic_int count; _Alignas(64) atomic_int sense; int stop, over, local;   /* over: the call has ended */
+    pthread_t *th; pthread_mutex_t mu; pthread_cond_t cv; int64_t gen;   /* the pool; gen counts calls (workers park between them) */
 } TP;
 
 static void tbar(TP *M, int *local) {
@@ -704,14 +711,28 @@ static void tile_epoch(TP *M, int k) {
 typedef struct { TP *M; int id; } TArg;
 
 static void *tile_worker(void *arg) {
-    TP *M = ((TArg *)arg)->M; int id = ((TArg *)arg)->id, local = 0;
+    TP *M = ((TArg *)arg)->M; int id = ((TArg *)arg)->id, local = 0; int64_t gen = 0;
+    free(arg);
     while (1) {
-        tbar(M, &local);              /* the epoch is set up */
+        pthread_mutex_lock(&M->mu);   /* park until the next call */
+        while (M->gen == gen && !M->stop) pthread_cond_wait(&M->cv, &M->mu);
+        gen = M->gen;
+        pthread_mutex_unlock(&M->mu);
         if (M->stop) break;
-        tile_epoch(M, id);
-        tbar(M, &local);              /* results ready */
+        while (1) {
+            tbar(M, &local);          /* the epoch is set up, or the call is over */
+            if (M->over) { tbar(M, &local); break; }   /* (everyone has seen the end before the next call starts) */
+            tile_epoch(M, id);
+            tbar(M, &local);          /* results ready */
+        }
     }
     return NULL;
+}
+
+static void pool_free(TP *M) {
+    pthread_mutex_lock(&M->mu); M->stop = 1; pthread_cond_broadcast(&M->cv); pthread_mutex_unlock(&M->mu);
+    for (int k = 1; k < M->T; k++) pthread_join(M->th[k], NULL);
+    free(M->th); free(M->cuts); free(M->loff); free(M->lcuts); free(M);
 }
 
 #define HB 16  /* histogram bin width in v for the cuts */
@@ -724,61 +745,66 @@ void world_run_tiles(World *w, int64_t t_end, int64_t nf, const int64_t *feeds,
         for (int k = w->ntiles; k < T; k++) w->tiles[k] = tile_new(w);
         w->ntiles = T;
     }
-    TP M; memset(&M, 0, sizeof M);
-    M.w = w; M.T = T; M.out = out; M.feeds = feeds; M.reads = reads;
-    M.cuts = malloc((T + 1) * 8); M.loff = malloc((T + 1) * 8); M.lcuts = malloc((T + 1) * 8);
+    if (w->pool && w->pool->T != T) { pool_free(w->pool); w->pool = NULL; }
+    if (!w->pool) {
+        TP *P = w->pool = calloc(1, sizeof *P);
+        P->w = w; P->T = T;
+        P->cuts = malloc((T + 1) * 8); P->loff = malloc((T + 1) * 8); P->lcuts = malloc((T + 1) * 8);
+        P->th = malloc(T * sizeof(pthread_t));
+        pthread_mutex_init(&P->mu, NULL); pthread_cond_init(&P->cv, NULL);
+        for (int k = 1; k < T; k++) { TArg *a = malloc(sizeof *a); *a = (TArg){P, k}; pthread_create(&P->th[k], NULL, tile_worker, a); }
+    }
+    TP *M = w->pool;
+    M->out = out; M->feeds = feeds; M->reads = reads; M->over = 0;
+    pthread_mutex_lock(&M->mu); M->gen++; pthread_cond_broadcast(&M->cv); pthread_mutex_unlock(&M->mu);   /* wake the pool */
     int64_t *lx, *ly, n = world_list(w, w->t, &lx, &ly), cap = n + 1;
-    M.loff[0] = 0; M.lcuts[0] = w->lo;   /* one segment: the list is unsorted */
-    for (int k = 1; k <= T; k++) { M.loff[k] = n; M.lcuts[k] = w->hi + 1; }
+    M->loff[0] = 0; M->lcuts[0] = w->lo;   /* one segment: the list is unsorted */
+    for (int k = 1; k <= T; k++) { M->loff[k] = n; M->lcuts[k] = w->hi + 1; }
     world_clear(w, w->t);
     int64_t nb = w->V2 / HB + 2, *hist = malloc(nb * 8);
-    pthread_t th[T]; TArg args[T];
-    for (int k = 1; k < T; k++) { args[k] = (TArg){&M, k}; pthread_create(&th[k], NULL, tile_worker, &args[k]); }
-    int local = 0;
     int64_t fi = 0, ri = 0;
     while (fi < nf && feeds[3 * fi] < w->t) fi++;
     while (ri < nr && reads[3 * ri] < w->t) ri++;
-    M.first = 1;
+    M->first = 1;
     int64_t epoch = 0;
     while (w->t < t_end) {
-        M.t0 = w->t; M.t1 = w->t + D < t_end ? w->t + D : t_end;
-        M.lx = lx; M.ly = ly; M.n = n;
+        M->t0 = w->t; M->t1 = w->t + D < t_end ? w->t + D : t_end;
+        M->lx = lx; M->ly = ly; M->n = n;
         if (epoch++ % RECUT == 0) {   /* ranges of equal ball counts from a coarse histogram of v; the action
                                        * drifts down the band during a frame, so recut now and then (a full
                                        * reload). Weighting by measured events per tile was tried: no gain. */
             memset(hist, 0, nb * 8);
             for (int64_t j = 0; j < n; j++) hist[(lx[j] - ly[j] - w->lo) / HB]++;
-            M.cuts[0] = w->lo; M.cuts[T] = w->hi + 1;
+            M->cuts[0] = w->lo; M->cuts[T] = w->hi + 1;
             int64_t acc = 0; int k = 1;
             for (int64_t b = 0; b < nb && k < T; b++) {
                 acc += hist[b];
-                while (k < T && acc * T >= n * k) M.cuts[k++] = w->lo + (b + 1) * HB;
+                while (k < T && acc * T >= n * k) M->cuts[k++] = w->lo + (b + 1) * HB;
             }
-            for (; k < T; k++) M.cuts[k] = w->hi + 1;
-            M.first = 1;
+            for (; k < T; k++) M->cuts[k] = w->hi + 1;
+            M->first = 1;
         }
-        M.fa = fi; while (fi < nf && feeds[3 * fi] < M.t1) fi++; M.fb = fi;
-        M.ra = ri; while (ri < nr && reads[3 * ri] < M.t1) ri++; M.rb = ri;
-        tbar(&M, &local);
-        tile_epoch(&M, 0);
-        tbar(&M, &local);
+        M->fa = fi; while (fi < nf && feeds[3 * fi] < M->t1) fi++; M->fb = fi;
+        M->ra = ri; while (ri < nr && reads[3 * ri] < M->t1) ri++; M->rb = ri;
+        tbar(M, &M->local);
+        tile_epoch(M, 0);
+        tbar(M, &M->local);
         int64_t tot = 0;   /* merge the kept particles */
         for (int k2 = 0; k2 < T; k2++) { tot += w->tiles[k2]->nk; if (w->tiles[k2]->broken) { w->broken = 1; w->tiles[k2]->broken = 0; } }
         if (tot + 1 > cap) { cap = 2 * (tot + 1); lx = realloc(lx, cap * 8); ly = realloc(ly, cap * 8); }
         n = 0;
         for (int k2 = 0; k2 < T; k2++) {   /* segment k2 of the new list is tile k2's range */
             World *t = w->tiles[k2];
-            M.loff[k2] = n; M.lcuts[k2] = M.cuts[k2];
+            M->loff[k2] = n; M->lcuts[k2] = M->cuts[k2];
             memcpy(lx + n, t->kx, t->nk * 8); memcpy(ly + n, t->ky, t->nk * 8); n += t->nk;
         }
-        M.loff[T] = n; M.lcuts[T] = M.cuts[T];
-        w->t = M.t1;
-        M.first = 0;
+        M->loff[T] = n; M->lcuts[T] = M->cuts[T];
+        w->t = M->t1;
+        M->first = 0;
     }
-    M.stop = 1;
-    tbar(&M, &local);
-    for (int k = 1; k < T; k++) pthread_join(th[k], NULL);
+    M->over = 1;   /* the call is over: the workers park */
+    tbar(M, &M->local); tbar(M, &M->local);
     for (int64_t j = 0; j < n; j++) schedule(w, new_particle(w, lx[j], ly[j], w->t));   /* the master is a world again */
-    free(lx); free(ly); free(M.cuts); free(M.loff); free(M.lcuts); free(hist);
+    free(lx); free(ly); free(hist);
 }
 #endif
