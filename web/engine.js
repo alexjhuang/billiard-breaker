@@ -498,10 +498,10 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
     busy = false;
   };
   const start = async d => {
-    if (!d.cpu) {
+    if (d.gpu) {  // opt-in: the GPU engine (web/gpu.js) is experimental
       try {
         importScripts('gpu.js');
-        M = await new GpuMachine(d.meta, d.squares, { spin: d.spin }).init();
+        M = await new GpuMachine(d.meta, d.squares, { spin: d.spin, tiles: d.tiles, epoch: d.epoch }).init();
         engine = 'GPU · ' + M.info + (d.spin ? ` · ${d.spin} spinners` : '');
       } catch (e) { M = null; engine = 'CPU (no WebGPU: ' + String(e).replace(/^Error: /, '') + ')'; }
     } else engine = 'CPU';

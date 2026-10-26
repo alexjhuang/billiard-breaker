@@ -35,6 +35,13 @@ Source of truth between sessions. Trust `python3 tests/run_all.py` over this fil
 - [x] M9 finish — README.md with measured numbers, layout images, final report.
 
 ## Current
+2026-10-26: GPU engine rounds 3-4 (DECISIONS.md): on an RTX 5060 Ti the single
+workgroup version measured 653 ms a frame of pure GPU time; events exist in
+99.6% of steps so no step skipping; now the engine is 16 tiles (workgroups)
+with 64-step epochs exchanged through GPU memory (1116 dispatches a frame),
+exact on the software adapter. Site: CPU engine by default, button for the GPU
+one (?gpu), ?tiles ?epoch ?spin for tuning; GPU time shown. Real-card number
+for the tiled version pending from the user.
 2026-10-24 (later): event engine on threads (world_run_tiles, incremental ghost
 swap, dimer-aware window edges): play.py --bench 8.7 -> 22 frames/s on 16
 threads, exact (tests/test_fastsim tiled tests, difftest bot games on 4 threads).

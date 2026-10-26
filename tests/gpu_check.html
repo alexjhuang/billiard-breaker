@@ -5,13 +5,13 @@
 <script src="engine.js"></script><script src="gpu.js"></script>
 <script>
 (async () => {
-  const q = new URLSearchParams(location.search), frames = +(q.get('frames') || 3), out = { ok: false };
+  const q = new URLSearchParams(location.search), frames = +(q.get("frames") || 3), out = { ok: false }, opts = { tiles: +(q.get("tiles") || 0), epoch: +(q.get("epoch") || 0) };
   try {
     const meta = await (await fetch('machine.json')).json();
     const wr = await fetch('walls.bin.gz');
     const squares = new Uint16Array(await new Response(wr.body.pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
     const J = new Machine(meta, squares), t0 = performance.now();
-    const G = await new GpuMachine(meta, squares).init();
+    const G = await new GpuMachine(meta, squares, opts).init();
     out.gpu = G.info; out.initMs = Math.round(performance.now() - t0);
     const P = meta.P, diffs = [], times = [];
     for (let k = 0; k < frames; k++) {

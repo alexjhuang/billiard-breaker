@@ -268,3 +268,26 @@ Still 7 µs a step, so the step itself was restructured and instrumented:
   createComputePipelineAsync). The two summaries share one buffer.
 Exact (tests/test_gpu.py; the software adapter is now ~2 min a frame, it
 pays for every load). Numbers from the real card decide the next step.
+
+## 2026-10-26 — GPU engine, round four: tiles across the band, CPU by default
+Measured on the real card after round three: 653 ms a frame, all of it GPU
+time (timestamps), i.e. ~9 µs a step for one workgroup, which no instruction
+count explains; the likely causes are a card idling at low clocks for a
+single workgroup and poor code for that shape. Also measured here: 71 131 of
+the 71 396 steps of a frame have an event somewhere (gaps of 2-4 steps only
+246 times), so a GPU engine cannot skip steps; 60 frames/s means 233 ns a
+step, out of reach for one workgroup rebuilding a 230-cell set per step.
+So the engine is now the C tiles on the GPU: T workgroups (16) of 64
+threads, each holding the balls of a range of x-y plus a light-cone margin
+(2D + 4 rows), stepping them D (64) steps per dispatch with the rotating cell
+sets, and writing back the balls that ended in its range. Every dispatch
+re-reads the list the previous one wrote, ranks the balls by x-y (O(N²) over
+~230, shared memory) to cut ranges of equal counts, and takes its window; wall
+knowledge (steps to the next wall and its cells) travels with the ball, so
+ghosts need no rescans. P / D = 1116 dispatches a frame, each with its own
+uniform (dynamic offset), one command buffer, no host work in between.
+Exact (tests/test_gpu.py, 16 × 64 and 8 × 128). The software adapter is
+twice as fast as the one-workgroup version since it uses 16 CPU threads; the
+real card's number is pending. ?tiles=N&epoch=D tune it; ?spin=N as before.
+The page runs the CPU engine by default (playable everywhere) with a button
+to try the GPU engine (?gpu), as asked.

@@ -1,8 +1,8 @@
 # Brick Breaker on a Billiard Ball Computer
 
 **Play it in your browser: https://alexjhuang.github.io/billiard-breaker/** (the
-machine runs on your computer: on your GPU through WebGPU where the browser has
-it, else on one CPU core at ~4 frames/s).
+machine runs on your computer, on one CPU core at ~4 frames/s; a button tries
+the experimental WebGPU engine).
 
 A playable brick-breaker game whose entire game logic is computed by billiard
 balls: a Margolus billiard-ball-model cellular automaton (BBMCA). The frontend
@@ -70,27 +70,31 @@ machine pauses while nobody is connected.
 
 **Static version (GitHub Pages).** `python3 web.py --export DIR` writes the
 same page plus the hardware as data and two engines that run the machine in the
-visitor's browser, in a Web Worker: `web/gpu.js` on the GPU through WebGPU, and
-`web/engine.js`, a JavaScript port of the C simulator, on one CPU core when
-there is no WebGPU (or with `?cpu` in the URL). The page says which one is
-running and how long a frame takes.
+visitor's browser, in a Web Worker: `web/engine.js`, a JavaScript port of the C
+simulator, on one CPU core (the default), and `web/gpu.js` on the GPU through
+WebGPU (the button, or `?gpu`; experimental). The page says which one is
+running and how long a frame takes, on the GPU too when the browser has
+timestamp queries.
 
-- *GPU.* One compute workgroup of 256 threads steps the whole automaton, every
-  ball at once (two slots per thread, up to 512 balls). The balls' cells are a
-  hash set in on-chip workgroup memory, rebuilt each step, so applying the
-  rule to a ball's block is three on-chip lookups and a step is four barriers;
-  the mirrors are two read-only bitmaps in GPU memory (160 MB) that a ball
-  reads only when its direction changes, to find the step at which its front
-  reaches a wall. Feeds, reads and pictures are served inside the shader; a
-  frame is 35 dispatches of 2048 steps in one command buffer and one readback.
-  tests/test_gpu.py checks it against the JS engine on Chromium's software
-  WebGPU adapter, the only WebGPU on this machine: identical states, flags and
-  recorded balls. **Speed on a real GPU is not measured here** (there is
-  none); the design aims at 0.3–1 µs a step, i.e. 20–70 ms a frame, and the
-  page shows the actual number.
 - *CPU.* 3.7 frames/s under Node on this machine (274 ms per frame; the old
   stepping engine took 171 ms per frame on the old, 40% smaller machine).
   tests/test_engine.py checks it against the C simulator.
+- *GPU.* The C simulator's tiles on the GPU: 16 workgroups of 64 threads, each
+  holding the balls of a range of x−y plus a light-cone margin, step them 64
+  times per dispatch (the Margolus rule on each ball's block, all balls at
+  once, the cells in rotating hash sets in on-chip memory: two barriers a
+  step) and write back the balls that ended in their range; the next dispatch
+  re-cuts the band into equal counts. The mirrors are two read-only bitmaps
+  (160 MB) with one-bit-per-word summaries, read only when a ball's direction
+  changes and a step ahead. A frame is 1116 dispatches in one command buffer
+  and one readback. tests/test_gpu.py checks it against the JS engine on
+  Chromium's software WebGPU adapter (the only WebGPU here): identical states,
+  flags and recorded balls. **Speed on a real GPU**: the one-workgroup
+  predecessor ran at 0.7–2 frames/s on an RTX 5060 Ti, all of it GPU time
+  (DECISIONS.md has the diagnosis); this version is not measured yet. A frame
+  has an event in 71 131 of its 71 396 steps, so no engine can skip steps:
+  60 frames/s needs 233 ns a step. `?tiles=N&epoch=D` tune the engine,
+  `?spin=N` adds busy workgroups to test whether the card idles at low clocks.
 
 Published at https://alexjhuang.github.io/billiard-breaker/ from the
 `gh-pages` branch (data files are versioned by content, so a cached page never
@@ -185,7 +189,7 @@ right bring next-state values back up. `docs/slot.png` zooms in on one gate.
 | frame rate, `--threads 1` | 8.7 frames/s (115 ms per frame) |
 | the same machine stepped (old simulator, estimate from 125 ms on the old machine) | ~4 frames/s on one core |
 | in the browser, CPU engine (web/engine.js under Node) | 3.7 frames/s |
-| in the browser, GPU engine (web/gpu.js) | not measured here (no GPU); exact on the software adapter |
+| in the browser, GPU engine (web/gpu.js, 16 tiles) | not measured here (no GPU); exact on the software adapter; the one-workgroup version did 0.7–2 frames/s on an RTX 5060 Ti |
 | world | cylinder 42 472 × 7 541 (u × x−y): 320 M cells |
 | frame period P | 71 396 automaton steps |
 | events per frame | 518 k blocks with more than a lone ball; 686 k ball reschedules; 16 M ball-steps of free flight skipped |

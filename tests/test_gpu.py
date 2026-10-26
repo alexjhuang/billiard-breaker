@@ -46,7 +46,7 @@ def test_gpu_engine_matches_js_engine():
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         try:
             url = f'http://127.0.0.1:{srv.server_address[1]}/gpu_check.html?frames=2'
-            out = subprocess.run([node, str(ROOT / 'tests' / 'cdp_title.js'), url, '330', *FLAGS],
+            out = subprocess.run([node, str(ROOT / 'tests' / 'cdp_title.js'), url, '300', *FLAGS],
                                  capture_output=True, text=True, timeout=900, env={**os.environ, 'CHROME': chromium()}).stdout
         finally:
             srv.shutdown()
