@@ -20,6 +20,7 @@ struct Params {
   U: i32, U2: i32, lo: i32, hi: i32, S: i32, RWU: i32, RWV: i32, P: i32,
   par0: i32, nfeeds: i32, nreads: i32, npics: i32, left: i32, right: i32, reset: i32, K: i32,
   picT: vec4<i32>, picK: vec4<i32>, picOff: vec4<i32>,
+  SWU: i32, SWV: i32, pad0: i32, pad1: i32,
 };
 @group(0) @binding(0) var<uniform> u: Params;
 @group(0) @binding(1) var<storage, read> wu: array<u32>;         // walls by row x+y, bit x-y-lo+PAD
@@ -28,6 +29,8 @@ struct Params {
 @group(0) @binding(4) var<storage, read> reads: array<vec4<i32>>; // t, x, y, output index
 @group(0) @binding(5) var<storage, read_write> st: array<i32>;    // persistent: per slot x, y, wallk, wallbits; then cur_t, fi, ri
 @group(0) @binding(6) var<storage, read_write> outb: array<u32>;  // [0] errors [1] cur_t [2] alive; [16..] read bits; [1024..] pic counts; [2048..] pic cells
+@group(0) @binding(7) var<storage, read> su: array<u32>;         // summary of wu: bit w of row u2 = word w of that row is not zero (SWU words a row)
+@group(0) @binding(8) var<storage, read> sv: array<u32>;         // summary of wv likewise (SWV words a row)
 
 const SLOTS = ${SLOTS}u;
 const HASH = 1024u;
@@ -50,6 +53,8 @@ var<workgroup> cnt: atomic<u32>;
 var<workgroup> err: atomic<u32>;
 var<workgroup> fi: i32;
 var<workgroup> ri: i32;
+var<workgroup> nextF: i32;   // time of feed fi (INF past the end): no polling of global memory every step
+var<workgroup> nextR: i32;
 var<workgroup> t_wg: i32;
 
 fn wrapi(a: i32, m: i32) -> i32 { var r = a; loop { if (r >= 0) { break; } r += m; } loop { if (r < m) { break; } r -= m; } return r; }
@@ -98,26 +103,45 @@ fn ctz(m: u32) -> u32 { return countTrailingZeros(m); }
 // whole scan is one memory latency per word visited.
 struct Scan { q: i32, i: i32, w: array<u32, 9> }  // w[3r + 0..2] = row r at words i-1, i, i+1
 
-fn scanV(r0: i32, r1: i32, r2: i32, p: i32, dir: i32, nw: i32) -> Scan {
+// The scan: the word holding p (masked), then the summaries to find the next
+// word with any bit in any of the three rows (a dependent load per summary word,
+// each covering 32 words), then that word. A ball whose column is empty for
+// thousands of cells (a falling messenger) thus costs ~3 memory latencies, not
+// hundreds. rs0..2: row offsets in the summary; nws: summary words a row.
+fn scanV(r0: i32, r1: i32, r2: i32, rs0: i32, rs1: i32, rs2: i32, p: i32, dir: i32, nw: i32, nws: i32) -> Scan {
   var sc: Scan;
   sc.q = -1;
   var i = p >> 5;
   if (i < 0 || i >= nw) { return sc; }
-  var ia = i - dir; if (ia < 0) { ia += nw; } if (ia >= nw) { ia -= nw; }   // the word behind us, kept as we move on
+  var ia = i - dir; if (ia < 0) { ia += nw; } if (ia >= nw) { ia -= nw; }
+  var ib = i + dir; if (ib < 0) { ib += nw; } if (ib >= nw) { ib -= nw; }
+  // the word holding p and its neighbours, in one round trip (the common case ends here)
   var a0 = wv[u32(r0 + ia)]; var a1 = wv[u32(r1 + ia)]; var a2 = wv[u32(r2 + ia)];
   var b0 = wv[u32(r0 + i)]; var b1 = wv[u32(r1 + i)]; var b2 = wv[u32(r2 + i)];
+  var c0 = wv[u32(r0 + ib)]; var c1 = wv[u32(r1 + ib)]; var c2 = wv[u32(r2 + ib)];
   var m = b0 | b1 | b2;
   if (dir > 0) { m &= 0xffffffffu << u32(p & 31); } else { m &= 0xffffffffu >> u32(31 - (p & 31)); }
-  loop {
-    if (m != 0u) { break; }
-    i += dir;
-    if (i < 0 || i >= nw) { return sc; }
-    a0 = b0; a1 = b1; a2 = b2;
+  if (m == 0u) {  // the summaries say which word next holds anything in any of the three rows
+    var i2 = i + dir;
+    if (i2 < 0 || i2 >= nw) { return sc; }
+    var j = i2 >> 5;
+    var sm = sv[u32(rs0 + j)] | sv[u32(rs1 + j)] | sv[u32(rs2 + j)];
+    if (dir > 0) { sm &= 0xffffffffu << u32(i2 & 31); } else { sm &= 0xffffffffu >> u32(31 - (i2 & 31)); }
+    loop {
+      if (sm != 0u) { break; }
+      j += dir;
+      if (j < 0 || j >= nws) { return sc; }
+      sm = sv[u32(rs0 + j)] | sv[u32(rs1 + j)] | sv[u32(rs2 + j)];
+    }
+    if (dir > 0) { i = j * 32 + i32(ctz(sm)); } else { i = j * 32 + 31 - i32(countLeadingZeros(sm)); }
+    if (i >= nw) { return sc; }
+  ia = i - dir; if (ia < 0) { ia += nw; } if (ia >= nw) { ia -= nw; }
+  ib = i + dir; if (ib < 0) { ib += nw; } if (ib >= nw) { ib -= nw; }
+    a0 = wv[u32(r0 + ia)]; a1 = wv[u32(r1 + ia)]; a2 = wv[u32(r2 + ia)];
     b0 = wv[u32(r0 + i)]; b1 = wv[u32(r1 + i)]; b2 = wv[u32(r2 + i)];
+    c0 = wv[u32(r0 + ib)]; c1 = wv[u32(r1 + ib)]; c2 = wv[u32(r2 + ib)];
     m = b0 | b1 | b2;
   }
-  var ib = i + dir; if (ib < 0) { ib += nw; } if (ib >= nw) { ib -= nw; }
-  let c0 = wv[u32(r0 + ib)]; let c1 = wv[u32(r1 + ib)]; let c2 = wv[u32(r2 + ib)];
   sc.i = i;
   if (dir > 0) { sc.q = i * 32 + i32(ctz(m)); } else { sc.q = i * 32 + 31 - i32(countLeadingZeros(m)); }
   if (dir > 0) { sc.w[0] = a0; sc.w[1] = b0; sc.w[2] = c0; sc.w[3] = a1; sc.w[4] = b1; sc.w[5] = c1; sc.w[6] = a2; sc.w[7] = b2; sc.w[8] = c2; }
@@ -125,26 +149,40 @@ fn scanV(r0: i32, r1: i32, r2: i32, p: i32, dir: i32, nw: i32) -> Scan {
   return sc;
 }
 
-fn scanU(r0: i32, r1: i32, r2: i32, p: i32, dir: i32, nw: i32) -> Scan {
+fn scanU(r0: i32, r1: i32, r2: i32, rs0: i32, rs1: i32, rs2: i32, p: i32, dir: i32, nw: i32, nws: i32) -> Scan {
   var sc: Scan;
   sc.q = -1;
   var i = p >> 5;
   if (i < 0 || i >= nw) { return sc; }
   var ia = clamp(i - dir, 0, nw - 1);
+  var ib = clamp(i + dir, 0, nw - 1);
+  // the word holding p and its neighbours, in one round trip (the common case ends here)
   var a0 = wu[u32(r0 + ia)]; var a1 = wu[u32(r1 + ia)]; var a2 = wu[u32(r2 + ia)];
   var b0 = wu[u32(r0 + i)]; var b1 = wu[u32(r1 + i)]; var b2 = wu[u32(r2 + i)];
+  var c0 = wu[u32(r0 + ib)]; var c1 = wu[u32(r1 + ib)]; var c2 = wu[u32(r2 + ib)];
   var m = b0 | b1 | b2;
   if (dir > 0) { m &= 0xffffffffu << u32(p & 31); } else { m &= 0xffffffffu >> u32(31 - (p & 31)); }
-  loop {
-    if (m != 0u) { break; }
-    i += dir;
-    if (i < 0 || i >= nw) { return sc; }
-    a0 = b0; a1 = b1; a2 = b2;
+  if (m == 0u) {  // the summaries say which word next holds anything in any of the three rows
+    var i2 = i + dir;
+    if (i2 < 0 || i2 >= nw) { return sc; }
+    var j = i2 >> 5;
+    var sm = su[u32(rs0 + j)] | su[u32(rs1 + j)] | su[u32(rs2 + j)];
+    if (dir > 0) { sm &= 0xffffffffu << u32(i2 & 31); } else { sm &= 0xffffffffu >> u32(31 - (i2 & 31)); }
+    loop {
+      if (sm != 0u) { break; }
+      j += dir;
+      if (j < 0 || j >= nws) { return sc; }
+      sm = su[u32(rs0 + j)] | su[u32(rs1 + j)] | su[u32(rs2 + j)];
+    }
+    if (dir > 0) { i = j * 32 + i32(ctz(sm)); } else { i = j * 32 + 31 - i32(countLeadingZeros(sm)); }
+    if (i >= nw) { return sc; }
+  ia = clamp(i - dir, 0, nw - 1);
+  ib = clamp(i + dir, 0, nw - 1);
+    a0 = wu[u32(r0 + ia)]; a1 = wu[u32(r1 + ia)]; a2 = wu[u32(r2 + ia)];
     b0 = wu[u32(r0 + i)]; b1 = wu[u32(r1 + i)]; b2 = wu[u32(r2 + i)];
+    c0 = wu[u32(r0 + ib)]; c1 = wu[u32(r1 + ib)]; c2 = wu[u32(r2 + ib)];
     m = b0 | b1 | b2;
   }
-  let ib = clamp(i + dir, 0, nw - 1);
-  let c0 = wu[u32(r0 + ib)]; let c1 = wu[u32(r1 + ib)]; let c2 = wu[u32(r2 + ib)];
   sc.i = i;
   if (dir > 0) { sc.q = i * 32 + i32(ctz(m)); } else { sc.q = i * 32 + 31 - i32(countLeadingZeros(m)); }
   if (dir > 0) { sc.w[0] = a0; sc.w[1] = b0; sc.w[2] = c0; sc.w[3] = a1; sc.w[4] = b1; sc.w[5] = c1; sc.w[6] = a2; sc.w[7] = b2; sc.w[8] = c2; }
@@ -183,16 +221,17 @@ fn front(x: i32, y: i32, dx: i32, dy: i32, par: i32) -> Front {
   var k = INF;
   if (dx == dy) {  // SE / NW: along a row of constant v, round the loop
     let r0 = (vv - 1) * u.RWV; let r1 = r0 + u.RWV; let r2 = r1 + u.RWV;
+    let s0 = (vv - 1) * u.SWV; let s1 = s0 + u.SWV; let s2 = s1 + u.SWV;
     let nw = (u.U2 + 31) >> 5;
     if (dx > 0) {
-      sc = scanV(r0, r1, r2, u2 + 1, 1, nw);
+      sc = scanV(r0, r1, r2, s0, s1, s2, u2 + 1, 1, nw, u.SWV);
       if (sc.q >= u.U2) { sc.q = -1; }
-      if (sc.q < 0) { sc = scanV(r0, r1, r2, 0, 1, nw); }
+      if (sc.q < 0) { sc = scanV(r0, r1, r2, s0, s1, s2, 0, 1, nw, u.SWV); }
       if (sc.q < 0 || sc.q >= u.U2) { return f; }
       k = (wrapi(sc.q - u2, u.U2) - 1) >> 1;
     } else {
-      sc = scanV(r0, r1, r2, u2 - 1, -1, nw);
-      if (sc.q < 0) { sc = scanV(r0, r1, r2, u.U2 - 1, -1, nw); }
+      sc = scanV(r0, r1, r2, s0, s1, s2, u2 - 1, -1, nw, u.SWV);
+      if (sc.q < 0) { sc = scanV(r0, r1, r2, s0, s1, s2, u.U2 - 1, -1, nw, u.SWV); }
       if (sc.q < 0) { return f; }
       k = (wrapi(u2 - sc.q, u.U2) - 1) >> 1;
     }
@@ -213,15 +252,15 @@ fn front(x: i32, y: i32, dx: i32, dy: i32, par: i32) -> Front {
   }
   var ua = u2 - 1; if (ua < 0) { ua = u.U2 - 1; }
   var ub = u2 + 1; if (ub == u.U2) { ub = 0; }
-  let R = u.RWU;
+  let R = u.RWU; let RS = u.SWU;
   var ex = 0;
   if (dy < 0) {  // NE: v rises
     ex = (u.hi - (x - y)) >> 1;
-    sc = scanU(ua * R, u2 * R, ub * R, vv + 1, 1, R);
+    sc = scanU(ua * R, u2 * R, ub * R, ua * RS, u2 * RS, ub * RS, vv + 1, 1, R, RS);
     if (sc.q >= 0) { k = (sc.q - vv - 1) >> 1; }
   } else {  // SW
     ex = ((x - y) - u.lo) >> 1;
-    sc = scanU(ua * R, u2 * R, ub * R, vv - 1, -1, R);
+    sc = scanU(ua * R, u2 * R, ub * R, ua * RS, u2 * RS, ub * RS, vv - 1, -1, R, RS);
     if (sc.q >= 0) { k = (vv - sc.q - 1) >> 1; }
   }
   if (ex < k) { f.k = ex; f.bits = blockWalls(x, y, dx, dy, ex, par); return f; }  // leaves the band first (rare: at the edge)
@@ -257,6 +296,8 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     atomicStore(&nfree, 0u); atomicStore(&err, 0u);
     fi = st[4u * SLOTS + 1u]; ri = st[4u * SLOTS + 2u]; t_wg = st[4u * SLOTS];
     if (t_wg >= u.P) { t_wg = 0; fi = 0; ri = 0; }  // a new frame
+    nextF = INF; if (fi < u.nfeeds) { nextF = sched[fi].x; }
+    nextR = INF; if (ri < u.nreads) { nextR = reads[ri].x; }
   }
   var t = workgroupUniformLoad(&t_wg);  // (a barrier too) the loop below must be uniform for its barriers
   for (var j = 0u; j < 2u; j++) {
@@ -273,8 +314,9 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     if (tid == 0u) {
       atomicStore(&cnt, 0u);
       loop {
-        if (fi >= u.nfeeds || sched[fi].x != t) { break; }
+        if (nextF != t) { break; }
         let f = sched[fi]; fi++;
+        nextF = INF; if (fi < u.nfeeds) { nextF = sched[fi].x; }
         let g = f.w;
         if ((g == 1 && u.left == 0) || (g == 2 && u.right == 0) || (g == 3 && u.reset == 0)) { continue; }
         var x = f.y; var y = f.z;
@@ -307,8 +349,9 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     // 3. reads and pictures at this step
     if (tid == 0u) {
       loop {
-        if (ri >= u.nreads || reads[ri].x != t) { break; }
+        if (nextR != t) { break; }
         let r = reads[ri]; ri++;
+        nextR = INF; if (ri < u.nreads) { nextR = reads[ri].x; }
         var x = r.y; var y = r.z;
         var s2 = x + y; loop { if (s2 >= 0) { break; } x += u.U; y += u.U; s2 += U2; }
         loop { if (s2 < U2) { break; } x -= u.U; y -= u.U; s2 -= U2; }
@@ -425,7 +468,13 @@ class GpuMachine {
         wu[u2 * RWU + (v >> 5)] |= 1 << (v & 31); wv[v * RWV + (u2 >> 5)] |= 1 << (u2 & 31);
       }
     }
-    bu.unmap(); bv.unmap();
+    const SWU = (RWU + 31) >> 5, SWV = (RWV + 31) >> 5;   // one bit per word of a row
+    const bsu = d.createBuffer({ size: U2 * SWU * 4, usage: GPUBufferUsage.STORAGE, mappedAtCreation: true });
+    const bsv = d.createBuffer({ size: S * SWV * 4, usage: GPUBufferUsage.STORAGE, mappedAtCreation: true });
+    const su = new Int32Array(bsu.getMappedRange()), sv = new Int32Array(bsv.getMappedRange());
+    for (let r = 0; r < U2; r++) for (let w = 0; w < RWU; w++) if (wu[r * RWU + w]) su[r * SWU + (w >> 5)] |= 1 << (w & 31);
+    for (let r = 0; r < S; r++) for (let w = 0; w < RWV; w++) if (wv[r * RWV + w]) sv[r * SWV + (w >> 5)] |= 1 << (w & 31);
+    bu.unmap(); bv.unmap(); bsu.unmap(); bsv.unmap();
     const sched = m.sched;  // sorted by t
     const fb = d.createBuffer({ size: Math.max(16, 16 * sched.length), usage: GPUBufferUsage.STORAGE, mappedAtCreation: true });
     new Int32Array(fb.getMappedRange()).set(sched.flat()); fb.unmap();
@@ -448,6 +497,7 @@ class GpuMachine {
     this.ub = d.createBuffer({ size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.params = new Int32Array(32);
     this.params.set([U2 / 2, U2, lo, hi, S, RWU, RWV, m.P, m.t_lo & 1, sched.length, rs.length, 0, 0, 0, 0, STEPS_PER_DISPATCH]);
+    this.params[28] = SWU; this.params[29] = SWV;
     const mod = d.createShaderModule({ code: WGSL });
     const ci = await mod.getCompilationInfo();
     const bad = ci.messages.filter(x => x.type === 'error');
@@ -456,7 +506,7 @@ class GpuMachine {
     this.bg = d.createBindGroup({ layout: this.pipe.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: this.ub } }, { binding: 1, resource: { buffer: bu } }, { binding: 2, resource: { buffer: bv } },
       { binding: 3, resource: { buffer: fb } }, { binding: 4, resource: { buffer: rb } }, { binding: 5, resource: { buffer: stb } },
-      { binding: 6, resource: { buffer: this.outb } }] });
+      { binding: 6, resource: { buffer: this.outb } }, { binding: 7, resource: { buffer: bsu } }, { binding: 8, resource: { buffer: bsv } }] });
     return this;
   }
 

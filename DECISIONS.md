@@ -231,3 +231,17 @@ back to direct loads. Exact (tests/test_gpu.py). Unmeasured on real
 hardware: SwiftShader got slower (54 s a frame from 33) because it pays for
 every load on the CPU, whereas a GPU pays for latency, which this halves per
 event. If a real GPU disagrees, revert this entry's commit.
+
+## 2026-10-25 — first real GPU: 0.7 frames/s on an RTX 5060 Ti, and why
+Two serial memory-latency chains the software adapter could not show:
+(1) a falling messenger's column has no mirror until the U-turn thousands of
+rows down, so its scan walked ~236 words with a dependent global load each
+(~150 µs, the whole workgroup waiting at the barrier), ~2 600 times a frame;
+(2) thread 0 polled the feed and read schedules in global memory every step.
+Now each wall row has a summary word per 32 words (one bit: the word is not
+zero; 2.5 MB per orientation), so a scan is the word holding the ball and its
+neighbours in one round trip, else summaries then that word: ~3 latencies
+for an empty column instead of ~240; and the next feed/read times are cached.
+Exact (tests/test_gpu.py). Expected now: ~1 global latency a step (most steps
+have a rescan somewhere), so 50-100 ms a frame on that card; the next lever
+is issuing the rescan loads in the previous step so they overlap the barriers.
