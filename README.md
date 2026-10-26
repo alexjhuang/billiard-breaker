@@ -190,15 +190,15 @@ right bring next-state values back up. `docs/slot.png` zooms in on one gate.
 
 | | |
 |---|---|
-| frame rate, `python3 play.py --bench 40 --threads 16` (the default) | **25 frames/s** (load average ~50) |
-| frame rate, `--threads 1` | 18.3 frames/s (55 ms per frame) |
-| in the browser, CPU engine (web/engine.js under Node) | 8.2 frames/s (122 ms per frame) |
+| frame rate, `python3 play.py --bench 40 --threads 16` (the default) | **26 frames/s** (load average ~50) |
+| frame rate, `--threads 1` | 19 frames/s (53 ms per frame) |
+| in the browser, CPU engine (web/engine.js under Node) | 8.3 frames/s (121 ms per frame) |
 | in the browser, GPU engine (web/gpu.js, 16 tiles) | not measured here (no GPU); exact on the software adapter; the one-workgroup version did 0.7–2 frames/s on an RTX 5060 Ti |
-| world | cylinder 27 408 × 11 941 (u × x−y): 327 M cells |
-| frame period P | 45 104 automaton steps (71 396 with one gate per slot) |
+| world | cylinder 25 060 × 11 941 (u × x−y): 299 M cells |
+| frame period P | 42 756 automaton steps (71 396 with one gate per slot) |
 | events per frame | 251 k blocks with more than a lone ball; 334 k ball reschedules (518 k / 686 k with one gate per slot); ~427 balls moving on average, 620 at most |
 | gates | 776 switch gates + 87 copies = 863 messengers per frame |
-| slots | 632 (3 input, gate slots holding up to 4 gates each, 1 lift, a catch-up tail of ~300) |
+| slots | 632 (3 input, 277 gate slots holding up to 4 gates each, 4 lift, 348 catch-up) |
 | mirrors | 130 786 bars (1.0 M wall cells) |
 | balls added per frame | 1261 (messengers, power, 3 key inputs) |
 | lanes alive | ≤ 294 lines; ~427 moving balls on average |
@@ -230,9 +230,10 @@ and ~60 ms stepping on 16 tile threads.
 - The event-driven simulator's cost is set by the layout, not by free flight:
   every lane detours in every slot, so a ball has an event every ~32 steps.
   Shortening the frame means fewer slots, i.e. fewer idle detours; up to four
-  gates per slot took P from 71 396 to 45 104.
-- The frame's tail (320 idle slots, 39% of P) is the debt of lifting next-state
-  values back up: a value produced 200 lines deep owes ~290 slots (1.43 a line).
+  gates per slot took P from 71 396 to 42 756.
+- The frame's tail (348 idle slots, 30% of P) is the debt of lifting next-state
+  values back up: a value produced 270 lines deep owes ~390 slots (1.43 a line).
+  The 28 lattice rows every slot costs are 41% of P.
 - Threads give 2.5x, not 16x: the light-cone margins redo 1.7x the real
   events because the live balls occupy a narrow part of the band, and the
   epoch barriers (1 116 a frame) cost on a shared machine.

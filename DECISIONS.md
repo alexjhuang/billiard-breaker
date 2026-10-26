@@ -346,3 +346,14 @@ checked, and its fault was at |84 − 80| = 4 as predicted. With the rule, 4 ops
 per slot is exact: 632 slots, P = 45 104. It did not shorten the tail at
 3 ops per slot: early lifts are limited by candidates (values final late,
 state lines still busy), not by the safety rule.
+
+## 2026-10-26 — narrower gate slots: messengers first, splitters after
+A slot's gates used to alternate messenger and splitter columns 10 apart. Now
+all messengers fall first, 2 columns apart (parallel falling balls never
+meet), then all splitters, 4 apart: 6 columns per extra gate instead of 10.
+Splitters 2 apart broke 3+ gates (a dropped track falls at its splitter and
+passed within half a column of the next gate's landing bar). Also measured:
+pre-bump columns 6 apart break (8 needed), the first messenger can sit 8
+columns after zone A instead of 10 (P 42 202, exact; not adopted, 1%).
+P 45 104 → 42 756; of it 70% is the 277 gate slots (79 columns + 28 rows
+each), 30% the 352-slot tail; the 28 rows a slot are 41% of P.

@@ -9,10 +9,12 @@ lane leaves a slot at r - ROW - ROW*debt):
                   largest delay in the slot; a lane delayed d slots to its op's level
                   takes an ordinary ROW bump in the first d of them
              uA = next column: zone A: controls retime ACT_C, data ACT_D, idle lanes ROW
-             op k (level l, rows rk = r - ROW*l): x+y = 2(uA+10+10k)+1 messenger
-                  column at row rk-ACT_C; uA+16+10k splitter (and landing of a
-                  kept B, 1.5 columns left)
-             uD = uA+19+10(nops-1) zone D: everything back onto the lattice
+             op k (level l, rows rk = r - ROW*l): x+y = 2(uA+10+2k)+1 messenger
+                  column at row rk-ACT_C (falling messengers 2 apart never meet);
+                  then uA+16+2(nops-1)+4k splitter (and landing of a kept B, 1.5
+                  columns left; a dropped track falls at the splitter and must clear
+                  the next landing): every splitter right of every messenger
+             uD = uA+19+6(nops-1) zone D: everything back onto the lattice
              uD+10 drops (controls at their last use, leftovers), 4 apart
              end-8 lift zone (next-state lanes lifted early), if any
   lift slot: u0+4 down-moves, u0+16 idle bumps, u0+28 up-moves
@@ -26,6 +28,8 @@ from physics import Ball, interaction
 
 W, PITCH, R0 = 40, 40, 0
 W_IDLE = int(os.environ.get('BB_WIDLE', 8))  # idle slots: bumps only, 8 columns apart
+PRESP = int(os.environ.get('BB_PRESP', 8))   # pre-bump columns apart
+MOFF = int(os.environ.get('BB_MOFF', 10))    # first messenger column after zone A
 # Row lattice: every lane leaves a slot ROW rows later. Controls are delayed
 # ACT_C into the messenger's row, data ACT_C+2 (one read shifts a lane 6, a
 # messenger 2); everything is then put back on the lattice. ROW=28/ACT_C=10
@@ -42,7 +46,7 @@ class Machine:
         self.plan, self.W = plan, w
         nslots = len(plan.slots)
         self.u0, self.uend = [0], []
-        for j, slot in enumerate(plan.slots):  # each extra op 10 columns, extra power op 4, extra drop 4; lifts a zone
+        for j, slot in enumerate(plan.slots):  # each extra op 6 columns, extra power op 4, extra drop 4; lifts a zone
             end = self.u0[-1] + (W_IDLE if slot.kind == 'idle' else w) + 4 * max(0, len(self.drop_list(slot)) - 1) \
                 + (10 if slot.kind == 'op' and slot.moves else 0) + self.extra_width(slot)
             self.uend.append(end)
@@ -73,21 +77,21 @@ class Machine:
             return 0
         npow = sum(p.op.data is None for p in slot.ops)
         npre = max([d for p in slot.ops for d in p.delays.values()], default=0)
-        return 10 * (len(slot.ops) - 1) + 4 * max(0, npow - 1) + 8 * npre
+        return 6 * (len(slot.ops) - 1) + 4 * max(0, npow - 1) + PRESP * npre + (MOFF - 10)
 
     def pre_u(self, j, slot):
         """The pre-bump columns, one per slot of delay."""
         npow = sum(p.op.data is None for p in slot.ops)
         npre = max([d for p in slot.ops for d in p.delays.values()], default=0)
         u = self.u0[j] + 8 + 4 * max(0, npow - 1)
-        return [u + 8 * i for i in range(npre)]
+        return [u + PRESP * i for i in range(npre)]
 
     def zone_a(self, j, slot):
         pre = self.pre_u(j, slot)
-        return pre[-1] + 8 if pre else self.u0[j] + 8 + 4 * max(0, sum(p.op.data is None for p in slot.ops) - 1)
+        return pre[-1] + PRESP if pre else self.u0[j] + 8 + 4 * max(0, sum(p.op.data is None for p in slot.ops) - 1)
 
     def drop_u(self, j, slot, line):
-        base = self.zone_a(j, slot) + 29 + 10 * (len(slot.ops) - 1) if slot.kind == 'op' else self.u0[j] + 37
+        base = self.zone_a(j, slot) + MOFF + 19 + 6 * (len(slot.ops) - 1) if slot.kind == 'op' else self.u0[j] + 37
         return base + 4 * self.drop_list(slot).index(line)
 
     def line_c(self, line):
@@ -135,7 +139,7 @@ class Machine:
     def slot_op(self, j, slot):
         u0, r, L = self.u0[j], self.rows(j), self.L
         uA, n = self.zone_a(j, slot), len(slot.ops)
-        uD = uA + 19 + 10 * (n - 1)
+        uD = uA + MOFF + 9 + 6 * (n - 1)
         used, npow = set(), 0
 
         def lane_at(sig):  # a lane where it rests at the start of this slot
@@ -158,12 +162,12 @@ class Machine:
                 npow += 1
             else:
                 R = L.retime(delayed(op.data, p), uA, ACT_D)
-            Q = L.messenger(2 * (uA + 10 + 10 * k) + 1, rk - ACT_C)
+            Q = L.messenger(2 * (uA + MOFF + 2 * k) + 1, rk - ACT_C)
             # controls are read in order from the top; at most one is present
             shifted = {c: interaction(ctrl_lanes[c], Q)[1] for c in ctrl_lanes}
             Q2 = Q._replace(q=Q.q - 2)
             A = interaction(R, Q2)[1]
-            uS = uA + 16 + 10 * k
+            uS = uA + MOFF + 6 + 2 * (n - 1) + 4 * k
             if op.keep == 'AB':
                 bar = L.split(R, uS, 'A')                # B goes down ...
                 B = self.land(R, bar, p.land[1])         # ... and lands on its own line
