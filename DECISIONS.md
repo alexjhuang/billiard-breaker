@@ -291,3 +291,13 @@ twice as fast as the one-workgroup version since it uses 16 CPU threads; the
 real card's number is pending. ?tiles=N&epoch=D tune it; ?spin=N as before.
 The page runs the CPU engine by default (playable everywhere) with a button
 to try the GPU engine (?gpu), as asked.
+
+## 2026-10-26 — the frame's tail: not a state-line ordering problem
+P = U + 28·slots has a tail of 159 idle slots (15% of P): the last next-state
+values are produced at lines 80–183 and every state line is at 0–70, so the
+deepest lane climbs ~145 lines, which at 20 rows a line of up-jog against the
+28-row lattice is a debt of ~208 slots (up_cost). Tried: assigning state
+lines by the depth at which each value is produced (and the reverse): 72 008
+and 78 128 steps against 71 396 — the values are all deep, the order does not
+matter. Shortening P needs the lanes off the lattice (no idle detour per slot)
+or several gates a slot; both are the compiler redesign noted under M8.
