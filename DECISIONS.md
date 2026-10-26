@@ -301,3 +301,8 @@ lines by the depth at which each value is produced (and the reverse): 72 008
 and 78 128 steps against 71 396 — the values are all deep, the order does not
 matter. Shortening P needs the lanes off the lattice (no idle detour per slot)
 or several gates a slot; both are the compiler redesign noted under M8.
+Also tried (2026-10-26): a deeper state block (values are made below their
+controls, so the tail moves down with it: 155 slots), ROW 24/20 (the retime
+geometry's assertions fail) and slot width 36/32 (layout tests and difftest
+fail): the lattice constants are tuned to the primitives' clearances and
+cannot be shrunk without re-deriving the slot geometry.
