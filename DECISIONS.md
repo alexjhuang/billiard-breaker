@@ -369,3 +369,7 @@ difftest): weights 0/2/4/6/8/12/20 give P 42 756 / 41 702 / 40 932 / 40 564 /
 41 596 / 41 994 / 42 496; "frees first" and "shallowest first" are worse. The
 tail does not move (~340 slots): the brick and score bits are final at slots
 237–278 of 280 and lifted at once, 250–270 lines deep, debt 350–385 each.
+Also measured: 5 and 6 ops per slot give P 41 806 and 43 918 against 40 564
+with 4: the pre-bump columns (one per slot of delay) outgrow the slots saved.
+On this architecture the frame is near its floor: ~265 gate slots of ~107
+steps and a ~340-slot lift tail of which ~9 500 rows are the climbs' delay.
