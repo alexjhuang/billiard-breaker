@@ -357,3 +357,7 @@ pre-bump columns 6 apart break (8 needed), the first messenger can sit 8
 columns after zone A instead of 10 (P 42 202, exact; not adopted, 1%).
 P 45 104 → 42 756; of it 70% is the 277 gate slots (79 columns + 28 rows
 each), 30% the 352-slot tail; the 28 rows a slot are 41% of P.
+Also measured (2026-10-26): a 26-row lattice (ROW 26, ACT_C 8) fails the
+layout tests; scheduling ops whose lanes already sit at a free level first
+(to save pre-bump columns) is exact but worse (694 slots, P 44 700): the
+longest-remaining-path priority matters more.
