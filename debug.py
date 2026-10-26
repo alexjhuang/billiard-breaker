@@ -14,15 +14,14 @@ def plan_values(plan, inputs):
         if name in inputs:
             val[s] = inputs[name]
     for slot in plan.slots:
-        op = slot.op
-        if op is None:
-            continue
-        x = max(val[c] for c in op.ctrls)
-        d = 1 if op.data is None else val[op.data]
-        if op.a is not None:
-            val[op.a] = d & x
-        if op.b is not None:
-            val[op.b] = d & (1 - x)
+        for p in slot.ops:
+            op = p.op
+            x = max(val[c] for c in op.ctrls)
+            d = 1 if op.data is None else val[op.data]
+            if op.a is not None:
+                val[op.a] = d & x
+            if op.b is not None:
+                val[op.b] = d & (1 - x)
     return val
 
 

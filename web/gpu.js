@@ -3,7 +3,7 @@
 // checked by tests/test_gpu.py.
 //
 // The band is cut across (by x-y) into T tiles of equal ball counts, each a
-// compute workgroup of 64 threads holding its balls and a light-cone margin
+// compute workgroup of 64 threads (3 balls each) holding its balls and a light-cone margin
 // (G = 2D + 4 rows, nothing moves faster than 2 rows a step). A dispatch is one
 // epoch of D steps: every tile reads the ball list the previous epoch wrote,
 // sorts it by x-y to find its range, takes the balls in its window, steps them
@@ -18,7 +18,7 @@
 // (each with its own uniform offset) and one readback. With timestamp-query
 // the GPU time of a frame is measured too.
 'use strict';
-const PADG = 2, NREC = 64, SLOTS = 128, HASH = 256, LMAX = 512, WG = 64;
+const PADG = 2, NREC = 64, SLOTS = 192, HASH = 256, LMAX = 1024, WG = 64, SPT = SLOTS / WG;  // SPT slots per thread
 
 const wgsl = (SVOFF) => /* wgsl */`
 struct Params {
@@ -64,8 +64,7 @@ var<workgroup> fi: i32;
 var<workgroup> ri: i32;
 var<workgroup> nextF: i32;   // time of feed fi (INF past the end): no polling of global memory every step
 var<workgroup> nextR: i32;
-var<workgroup> lv: array<i32, LMAX>;       // x - y of every ball in the list, and its record offset
-var<workgroup> lrec: array<i32, LMAX>;
+var<workgroup> lv: array<i32, LMAX>;       // x - y of every ball in the list
 var<workgroup> sortedV: array<i32, LMAX>;
 var<workgroup> segOff: array<i32, 65>;     // prefix of the segment counts (T <= 64)
 var<workgroup> nTot: i32;
@@ -398,7 +397,6 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
   for (var idx = i32(tid); idx < N; idx += ${WG}) {
     loop { if (idx < segOff[q + 1]) { break; } q++; }   // segments are in order, idx grows
     let rec = ep.inBase + T + 4 * (q * i32(SLOTS) + idx - segOff[q]);
-    lrec[idx] = rec;
     lv[idx] = lst[rec] - lst[rec + 1];
   }
   workgroupBarrier();
@@ -424,27 +422,28 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
   workgroupBarrier();
   // 3. my window's balls into slots, their cells into table t0 % 3
   let olo = own_lo; let ohi = own_hi; let wlo = win_lo; let whi = win_hi;
+  q = 0;
   for (var idx = i32(tid); idx < N; idx += ${WG}) {
     let v = lv[idx];
+    loop { if (idx < segOff[q + 1]) { break; } q++; }
     if (v < wlo || v > whi) { continue; }
     let s = atomicAdd(&nslots, 1u);
     if (s >= SLOTS) { atomicOr(&err, 2u); continue; }
-    let rec = lrec[idx];
+    let rec = ep.inBase + T + 4 * (q * i32(SLOTS) + idx - segOff[q]);
     px[s] = lst[rec]; py[s] = lst[rec + 1]; wk[s] = lst[rec + 2]; wb[s] = u32(lst[rec + 3]);
   }
   workgroupBarrier();
   let ns = atomicLoad(&nslots);
   let cur0 = u32(t0 % 3) * HASH;
-  for (var j = 0u; j < 2u; j++) {
+  for (var j = 0u; j < ${SPT}u; j++) {
     let s = tid + ${WG}u * j;
-    if (s >= SLOTS) { continue; }
     if (s >= ns) { wk[s] = DEAD; freeSlot(s); } else { hinsert(cur0, cellkey(px[s], py[s])); }
   }
   workgroupBarrier();
   // 4. the epoch
   var t = t0;
-  var pf0: Scan; var pf1: Scan;
-  pf0.i = -1; pf1.i = -1;
+  var pfs: array<Scan, ${SPT}>;
+  for (var j = 0; j < ${SPT}; j++) { pfs[j].i = -1; }
   loop {
     if (t >= t1) { break; }
     let par = (u.par0 + t) & 1;
@@ -491,7 +490,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
         atomicStore(&outb[OUT_READS + u32(r.w)], bit);
       }
     }
-    rescan(tid, par, &pf0); rescan(tid + ${WG}u, par, &pf1);
+    for (var j = 0; j < ${SPT}; j++) { rescan(tid + ${WG}u * u32(j), par, &pfs[j]); }
     workgroupBarrier();
     // B. the rule, every ball at once, from table cur into table nxt
     var rec = -1;
@@ -499,12 +498,12 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
       let TT = u.picT[j]; let K = u.picK[j];
       if (t > TT - K && t <= TT) { rec = u.picOff[j] + t - (TT - K + 1); }
     }
-    stepSlot(tid, t, par, cur, nxt, rec, &pf0); stepSlot(tid + ${WG}u, t, par, cur, nxt, rec, &pf1);
+    for (var j = 0; j < ${SPT}; j++) { stepSlot(tid + ${WG}u * u32(j), t, par, cur, nxt, rec, &pfs[j]); }
     t++;
     workgroupBarrier();
   }
   // 5. the balls that ended in my range, for the next epoch
-  for (var j = 0u; j < 2u; j++) {
+  for (var j = 0u; j < ${SPT}u; j++) {
     let s = tid + ${WG}u * j;
     if (s >= SLOTS || wk[s] == DEAD) { continue; }
     let v = px[s] - py[s];

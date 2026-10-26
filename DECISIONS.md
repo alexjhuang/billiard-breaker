@@ -306,3 +306,29 @@ controls, so the tail moves down with it: 155 slots), ROW 24/20 (the retime
 geometry's assertions fail) and slot width 36/32 (layout tests and difftest
 fail): the lattice constants are tuned to the primitives' clearances and
 cannot be shrunk without re-deriving the slot geometry.
+
+## 2026-10-26 — several gates per slot: P 71 396 → 45 990
+The frame period is P = U + ROW·slots, and with one gate per slot every lane
+pays a 28-row detour per gate. Now a slot holds up to MAXL = 3 ops at
+distinct *levels*: a level is a lattice offset (a lane with debt d rests
+ROW·d rows below the slot's lattice row), the op's messenger is injected at
+its level's rows, and lanes at other levels pass it at g = 28k ± 2, which the
+shatter sets never contain. Each op has its own 10-column range (messenger,
+splitter, landing); power columns are 4 apart (a bar end shatters balls within
+2 tracks: 2 apart broke the machine, found with the fault finder). Lanes are
+delayed to their op's level by ordinary 28-row bumps in shared pre-columns,
+one per slot of delay: a single tall jog crosses the lines above and shatters
+whatever travels there (measured, both ways). Ops are list-scheduled: every
+slot takes the ready ops that fit, longest remaining path first; an op may
+consume its data only when every other use of it has been placed (the
+netlist's order used to guarantee this). Early lifts are not done in slots
+whose ops are above level 0: a lift's climb crosses the slot's lanes where
+they leave it, and only the lattice rows are safe (measured). Idle slots,
+which exist only so that lift debts get paid, are 8 columns wide instead of
+40. Result on the game: 664 slots (340 op slots, 260 of them with 3 ops; a
+321-slot idle tail), U 27 398, P 45 990. Exact: difftest 20 × 1000 and the bot
+games. The tail is now 39% of P and inherent: a value produced 200 lines
+deep owes ~290 slots to climb back (1.43 a line); carrying debt into the
+next frame would save ~36 slots because every state bit is used within the
+first 35 slots. Not tried: cutting the 10-column op range, MAXL 4 with a
+better lift policy (747 slots: fewer early lifts), lifts with less debt.

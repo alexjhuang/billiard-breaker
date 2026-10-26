@@ -137,15 +137,20 @@ delays its control and data lanes onto the messenger's row with small detours
 (two jogs) and puts them back afterwards; idle lanes take a 28-row detour in
 every slot to stay in step. Every unplanned crossing between a falling ball
 and a lane is then at least 8 rows away from any offset that would shatter.
+A slot holds up to three gates at different *levels*, lattice offsets of 28
+rows: a messenger only interacts with lanes at its own level, and lanes are
+delayed to their gate's level by ordinary 28-row bumps (DECISIONS.md).
 
 **The compiler.** hw/game.py writes the frame step as boolean logic (frozen
 games are handled by gating every cause of change; the brick decoder is a
 switch tree). hw/lower.py turns it into switch gates. plan.py gives each gate a
 slot along the loop and every signal a line, and enforces that messengers
 fall: a gate's data lane must sit below its controls, inserting copies where
-needed. Next-state values therefore drift down the band and are lifted back to
-their state lines as soon as they are final. compile.py turns slots into
-mirrors and the per-frame ball schedule; hardware.py exports just that.
+needed. Gates are list-scheduled into slots, longest remaining path first.
+Next-state values therefore drift down the band and are lifted back to their
+state lines as soon as they are final; the lifts' debt is paid in a tail of
+narrow idle slots. compile.py turns slots into mirrors and the per-frame ball
+schedule; hardware.py exports just that.
 
 **The simulator (csim/bbm.c).** Exact and event-driven: free flight is not
 stepped. Only 3% of the automaton's block updates do anything (a lone ball
@@ -185,20 +190,19 @@ right bring next-state values back up. `docs/slot.png` zooms in on one gate.
 
 | | |
 |---|---|
-| frame rate, `python3 play.py --bench 40 --threads 16` (the default) | **22.4, 21.8 frames/s** (2 runs, load average ~50) |
-| frame rate, `--threads 1` | 8.7 frames/s (115 ms per frame) |
-| the same machine stepped (old simulator, estimate from 125 ms on the old machine) | ~4 frames/s on one core |
-| in the browser, CPU engine (web/engine.js under Node) | 3.7 frames/s |
+| frame rate, `python3 play.py --bench 40 --threads 16` (the default) | **22.3 frames/s** (load average ~50) |
+| frame rate, `--threads 1` | 15.9 frames/s (63 ms per frame) |
+| in the browser, CPU engine (web/engine.js under Node) | 6.9 frames/s (144 ms per frame) |
 | in the browser, GPU engine (web/gpu.js, 16 tiles) | not measured here (no GPU); exact on the software adapter; the one-workgroup version did 0.7–2 frames/s on an RTX 5060 Ti |
-| world | cylinder 42 472 × 7 541 (u × x−y): 320 M cells |
-| frame period P | 71 396 automaton steps |
-| events per frame | 518 k blocks with more than a lone ball; 686 k ball reschedules; 16 M ball-steps of free flight skipped |
-| gates | 776 switch gates + 94 copies = 870 messengers per frame |
-| slots | 1033 (3 input, 870 gate, 1 lift, 159 catch-up) |
-| mirrors | 337 000 bars (2.7 M wall cells) |
-| balls added per frame | 1273 (870 messengers, 400 power, 3 key inputs) |
-| lanes alive | ≤ 184 lines; ~228 moving balls on average |
-| tiles (layout primitives placed) | 870 messengers, 870 splitters, 403 power/input sources, 471 drops, 83 797 retimes (an up-jog and a down-jog each) |
+| world | cylinder 27 398 × 11 941 (u × x−y): 327 M cells |
+| frame period P | 45 990 automaton steps (71 396 with one gate per slot) |
+| events per frame | 251 k blocks with more than a lone ball; 334 k ball reschedules (518 k / 686 k with one gate per slot); ~427 balls moving on average, 620 at most |
+| gates | 776 switch gates + 87 copies = 863 messengers per frame |
+| slots | 664 (3 input, 340 gate slots holding 1–3 gates each, 1 lift, 320 catch-up) |
+| mirrors | 161 383 bars (1.3 M wall cells) |
+| balls added per frame | 1259 (863 messengers, 393 power, 3 key inputs) |
+| lanes alive | ≤ 294 lines; ~427 moving balls on average |
+| tiles (layout primitives placed) | 863 messengers, 863 splitters, 396 power/input sources, 464 drops, 39 898 retimes (an up-jog and a down-jog each) |
 
 Before the arcade rules (488 gates, P = 43 456, 160 M cells): the event-driven
 simulator did 63 ms per frame on one core, against 125 ms stepping serially
@@ -224,9 +228,11 @@ and ~60 ms stepping on 16 tile threads.
 ## Known limitations
 
 - The event-driven simulator's cost is set by the layout, not by free flight:
-  every lane detours in every slot, so a ball has an event every ~32 steps and
-  a frame is ~690 k reschedules at ~170 ns each (C) or ~400 ns (JavaScript).
-  Shortening the frame now means fewer events, i.e. fewer idle detours.
+  every lane detours in every slot, so a ball has an event every ~32 steps.
+  Shortening the frame means fewer slots, i.e. fewer idle detours; three gates
+  per slot took P from 71 396 to 45 990.
+- The frame's tail (320 idle slots, 39% of P) is the debt of lifting next-state
+  values back up: a value produced 200 lines deep owes ~290 slots (1.43 a line).
 - Threads give 2.5x, not 16x: the light-cone margins redo 1.7x the real
   events because the live balls occupy a narrow part of the band, and the
   epoch barriers (1 116 a frame) cost on a shared machine.
