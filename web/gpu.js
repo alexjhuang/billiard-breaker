@@ -20,7 +20,7 @@
 'use strict';
 const PADG = 2, NREC = 64, SLOTS = 192, HASH = 256, LMAX = 1024, WG = 64, SPT = SLOTS / WG;  // SPT slots per thread
 
-const wgsl = (SVOFF) => /* wgsl */`
+const wgsl = (SVOFF, HBINS) => /* wgsl */`
 struct Params {
   U: i32, U2: i32, lo: i32, hi: i32, S: i32, RWU: i32, RWV: i32, P: i32,
   par0: i32, nfeeds: i32, nreads: i32, npics: i32, left: i32, right: i32, reset: i32, T: i32,
@@ -49,6 +49,8 @@ const OUT_READS = 16u;
 const OUT_COUNTS = 1024u;
 const OUT_CELLS = 2048u;
 const SVOFF = ${SVOFF};
+const HB = 32;            // histogram bin: rows of x - y
+const HBINS = ${HBINS}u;
 
 var<workgroup> px: array<i32, SLOTS>;
 var<workgroup> py: array<i32, SLOTS>;
@@ -65,7 +67,7 @@ var<workgroup> ri: i32;
 var<workgroup> nextF: i32;   // time of feed fi (INF past the end): no polling of global memory every step
 var<workgroup> nextR: i32;
 var<workgroup> lv: array<i32, LMAX>;       // x - y of every ball in the list
-var<workgroup> sortedV: array<i32, LMAX>;
+var<workgroup> hist: array<atomic<u32>, HBINS>;   // balls per HB rows of x - y, then its prefix sum
 var<workgroup> segOff: array<i32, 65>;     // prefix of the segment counts (T <= 64)
 var<workgroup> nTot: i32;
 var<workgroup> own_lo: i32;
@@ -385,6 +387,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
   let t0 = ep.t0; let t1 = ep.t1; let G = 2 * (t1 - t0) + 4;
   // 1. the list: segment offsets, every ball's x - y at t0
   for (var h = tid; h < 3u * HASH; h += ${WG}u) { atomicStore(&hk[h], EMPTY); }
+  for (var h = tid; h < HBINS; h += ${WG}u) { atomicStore(&hist[h], 0u); }
   if (tid == 0u) {
     var acc = 0;
     for (var q = 0; q < T; q++) { segOff[q] = acc; acc += lst[ep.inBase + q]; }
@@ -397,21 +400,24 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
   for (var idx = i32(tid); idx < N; idx += ${WG}) {
     loop { if (idx < segOff[q + 1]) { break; } q++; }   // segments are in order, idx grows
     let rec = ep.inBase + T + 4 * (q * i32(SLOTS) + idx - segOff[q]);
-    lv[idx] = lst[rec] - lst[rec + 1];
+    let v = lst[rec] - lst[rec + 1];
+    lv[idx] = v;
+    atomicAdd(&hist[u32((v - u.lo) / HB)], 1u);
   }
   workgroupBarrier();
-  // 2. ranks -> cuts of equal counts; my range and window
-  for (var idx = i32(tid); idx < N; idx += ${WG}) {
-    let v = lv[idx]; var r = 0;
-    for (var jx = 0; jx < N; jx++) { let vj = lv[jx]; if (vj < v || (vj == v && jx < idx)) { r++; } }
-    sortedV[r] = v;
+  // 2. cuts of (nearly) equal counts from the histogram's prefix sum; my range and window
+  if (tid == 0u) {
+    var acc = 0u;
+    for (var b = 0u; b < HBINS; b++) { acc += atomicLoad(&hist[b]); atomicStore(&hist[b], acc); }
   }
   workgroupBarrier();
   if (tid == 0u) {
     var lo = u.lo; var hi = u.hi + 1;
-    if (N > 0) {
-      if (k > 0) { lo = sortedV[(k * N) / T]; }
-      if (k < T - 1) { hi = sortedV[((k + 1) * N) / T]; }
+    if (N > 0) {   // cut k: the first bin boundary with at least k * N / T balls below it
+      var kk = k; var b = 0u;
+      if (k > 0) { loop { if (b >= HBINS || atomicLoad(&hist[b]) * u32(T) >= u32(k * N)) { break; } b++; } lo = u.lo + i32(b + 1u) * HB; }
+      if (k < T - 1) { loop { if (b >= HBINS || atomicLoad(&hist[b]) * u32(T) >= u32((k + 1) * N)) { break; } b++; } hi = u.lo + i32(b + 1u) * HB; }
+      lo = min(lo, u.hi + 1); hi = min(hi, u.hi + 1);
     } else if (k > 0) { lo = u.hi + 1; }   // an empty machine: tile 0 owns everything
     own_lo = lo; own_hi = hi;
     win_lo = max(u.lo, lo - G); win_hi = min(u.hi, hi - 1 + G);
@@ -601,7 +607,8 @@ class GpuMachine {
       this.qs = d.createQuerySet({ type: 'timestamp', count: 2 });
       this.qb = d.createBuffer({ size: 16, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
     }
-    const mod = d.createShaderModule({ code: wgsl(SVOFF) });
+    const HBINS = Math.ceil((hi - lo + 1) / 32) + 1;
+    const mod = d.createShaderModule({ code: wgsl(SVOFF, HBINS) });
     const ci = await mod.getCompilationInfo();
     const bad = ci.messages.filter(x => x.type === 'error');
     if (bad.length) throw new Error('shader: ' + bad.map(x => `${x.lineNum}:${x.linePos} ${x.message}`).join('; '));

@@ -373,3 +373,11 @@ Also measured: 5 and 6 ops per slot give P 41 806 and 43 918 against 40 564
 with 4: the pre-bump columns (one per slot of delay) outgrow the slots saved.
 On this architecture the frame is near its floor: ~265 gate slots of ~107
 steps and a ~340-slot lift tail of which ~9 500 rows are the climbs' delay.
+
+## 2026-10-26 — GPU tiles: cuts from a histogram, not a ranking
+Each dispatch cut the band into tiles by ranking every ball by x−y with an
+O(N²) loop in workgroup memory; with ~430 balls (the deeper band of the
+packed layout) that is ~2 800 iterations a thread per dispatch, 634 dispatches
+a frame. Now a 32-row histogram with a prefix sum gives the cuts in a few
+dozen operations a thread. Exact (software adapter); speed on the card still
+unmeasured.
