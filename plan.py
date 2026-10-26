@@ -41,7 +41,7 @@ def up_cost(n, row=28):
 
 
 class Plan:
-    MAXL = int(os.environ.get('BB_MAXL', 3))  # ops per slot (levels 0 .. MAXL-1)
+    MAXL = int(os.environ.get('BB_MAXL', 4))  # ops per slot (levels 0 .. MAXL-1)
 
     def __init__(self, net, state, ext=(), extra_out=()):
         """state: {input name: output name} pairs that are fed back each frame;
@@ -201,8 +201,16 @@ class Plan:
         if not cur:
             return
         places = cur['places']
-        # a lift's climb crosses the slot's lanes where they leave it: safe only at the lattice rows
-        moves = {} if any(p.level for p in places) else self.early_lift(cur['lanes'])
+        # every lane in the slot, with how far below the lattice row it leaves (in slots; 1: bumped)
+        lanes = {s: (l, d if d else 1) for s, (l, d) in self.live.items()}
+        for p in places:
+            for c in set(p.op.ctrls) - set(p.drops):
+                lanes[c] = (self.live[c][0], 1 + p.level)
+            for c in p.drops + ([p.op.data] if p.op.data else []):
+                lanes.pop(c, None)
+            for c, l in p.out_lines.items():
+                lanes[c] = (l, 1 + p.level)
+        moves = self.early_lift(cur['lanes'], lanes)
         out_lines = {s: l for p in places for s, l in p.out_lines.items()}
         drops = [c for p in places for c in p.drops]
         self.emit('op', ops=places, op=places[0].op, data_line=places[0].data_line, power_line=places[0].power_line,
@@ -222,7 +230,20 @@ class Plan:
             if debt and s not in moves and s not in cur['lanes']:
                 self.live[s] = (line, debt - 1)
 
-    def early_lift(self, used):
+    def lift_safe(self, a, b, lanes, skip=()):
+        """Can a lane climb from line a to line b past `lanes` ({sig: (line, D)},
+        D = how many lattice steps of 28 rows below the lattice row the lane leaves
+        the slot)? The climber rises 20 rows a line; a lane at line x meets it at
+        the crossing iff 28*D is within a few rows of 40*(a - x). (Measured: D = 1
+        and 2 are safe, 3 shatters.)"""
+        for x, (line, D) in lanes.items():
+            if x in skip or not (b < line < a):
+                continue
+            if abs(28 * D - 40 * (a - line)) <= 10:
+                return False
+        return True
+
+    def early_lift(self, used, lanes):
         """Pick one finished next-state lane (no uses left but its output, not
         used in this slot) whose state line is free and lift it in this slot's
         lift zone, so its delay is paid off while later ops run."""
@@ -235,6 +256,8 @@ class Plan:
                 continue
             if goal > line:
                 continue  # down-moves are free at the end
+            if not self.lift_safe(line, goal, lanes, skip=(s,)):
+                continue
             return {s: (line, goal, up_cost(line - goal))}
         return {}
 
@@ -265,6 +288,8 @@ class Plan:
                     continue
                 lo, hi = sorted((line, goal))
                 if any(not (hi < a or lo > b) for a, b in spans):
+                    continue
+                if goal < line and not self.lift_safe(line, goal, {x: (l, d if d else 1) for x, (l, d) in self.live.items()}, skip=(s,)):
                     continue
                 m = up_cost(line - goal) if goal < line else 1
                 moves[s] = (line, goal, m)

@@ -332,3 +332,17 @@ deep owes ~290 slots to climb back (1.43 a line); carrying debt into the
 next frame would save ~36 slots because every state bit is used within the
 first 35 slots. Not tried: cutting the 10-column op range, MAXL 4 with a
 better lift policy (747 slots: fewer early lifts), lifts with less debt.
+
+## 2026-10-26 — lifts in levelled slots: the resonance rule
+The blanket ban on early lifts in slots with ops above level 0 is replaced by
+the rule the snapshots showed: a lift from line a crosses the lane at line x
+(b < x < a) exactly when 28·D is within ~10 rows of 40·(a − x), where D is how
+many lattice steps (28 rows) below the slot's lattice row the lane leaves the
+slot (1 for a bumped lane, its debt for a lane skipping its bump, 1 + level
+for a gate's lanes and outputs). D = 1 (|28 − 40| = 12) is the old design's
+always-safe case, D = 2 is safe (16), D = 3 collides (4); the first build with
+the rule failed because the slot's own new output lanes were not in the set
+checked, and its fault was at |84 − 80| = 4 as predicted. With the rule, 4 ops
+per slot is exact: 632 slots, P = 45 104. It did not shorten the tail at
+3 ops per slot: early lifts are limited by candidates (values final late,
+state lines still busy), not by the safety rule.

@@ -36,9 +36,10 @@ Source of truth between sessions. Trust `python3 tests/run_all.py` over this fil
 
 ## Current
 2026-10-26 (pack): several gates per slot (DECISIONS.md): plan.py list-schedules
-up to 3 ops per slot at lattice levels, compile.py lays out multi-op slots, idle
-slots are 8 wide. P 71396 -> 45990 (664 slots), exact (full suite incl. difftest).
-C engine 8.7 -> 15.9 frames/s serial, 22 on 16 threads; JS 3.7 -> 6.9 under node.
+up to 4 ops per slot at lattice levels (lift resonance rule), compile.py lays out
+multi-op slots, idle slots are 8 wide. P 71396 -> 45104 (632 slots), exact (full
+suite incl. difftest). C engine 8.7 -> 18.3 frames/s serial, 25 on 16 threads;
+JS 3.7 -> 8.2 under node. Tiles help little now (51 -> 37 ms).
 Band deeper (294 lines, 11 941 rows). Next: the 321-slot lift tail (39% of P).
 2026-10-26: GPU engine rounds 3-4 (DECISIONS.md): on an RTX 5060 Ti the single
 workgroup version measured 653 ms a frame of pure GPU time; events exist in
