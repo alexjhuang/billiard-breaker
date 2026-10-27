@@ -168,3 +168,8 @@ JS at the start of the day). Native: 16 threads 15-17 ms (60-65 fps), serial 36 
 goal is not verified in a browser here; the remaining gap is thread imbalance (slowest tile
 1.6x the mean) and the ghost zone (2 x epoch) being as wide as a tile's range. The page shows
 "computed in X ms · Y frames/s"; `?threads=N`, `?epoch=D`, `?js`, `?gpu` switch engines.
+
+2026-10-26 (evening): light-cone ghost drop, barrier-free epochs. Live site in headless Chromium
+here: 16 threads 19 ms (50 frames/s), 8 threads 22 ms. Native 16 threads 13.7 ms. Measured and
+not adopted (DECISIONS.md): co-moving ranges with ball-heat cuts, per-epoch local cut moves,
+foresight/event/count cut weights, longer barrier windows, wasm compiler flags.
