@@ -62,6 +62,7 @@ typedef struct World_ {
     /* tiles (world_run_tiles): private copies sharing the walls; a tile trusts
      * only blocks the window edges cannot have reached yet */
     int tiled, shared_walls; int64_t wlo, whi, tbase;
+    int64_t rlo, rhi, tend;   /* a tile's own range [rlo, rhi) and the epoch's end: ghosts that can no longer reach the range are dropped */
     struct World_ **tiles; int ntiles;
     struct TP_ *pool;                                    /* the tile threads (world_run_tiles), parked between calls */
     int64_t *kx, *ky; int64_t nk, kcap;   /* a tile's kept particles after an epoch (written) ... */
@@ -441,6 +442,14 @@ static void process_block(World *w, int64_t T, int32_t *ids, int m) {
     int64_t o = T & 1, x0 = w->x[ids[0]] + DX[w->d[ids[0]]] * (T - w->t0[ids[0]]), y0 = w->y[ids[0]] + DY[w->d[ids[0]]] * (T - w->t0[ids[0]]);
     x0 -= (x0 - o) & 1; y0 -= (y0 - o) & 1;
     canon(w, &x0, &y0);
+    if (w->tiled) {   /* a block farther from my range than anything travels before the epoch ends (2 in v a step)
+                       * cannot touch my balls any more: drop its ghosts instead of simulating their (often junk) events */
+        int64_t v = x0 - y0, reach = 2 * (w->tend - T) + 8;
+        if (v < w->rlo - reach || v >= w->rhi + reach) {
+            for (int q = 0; q < m; q++) { index_del(w, ids[q]); free_particle(w, ids[q]); }
+            return;
+        }
+    }
     int wl[4], mv[4] = {-1, -1, -1, -1}, f[4], cnt = 0, vmaj = w->d[ids[0]] == 0 || w->d[ids[0]] == 3;
     for (int c = 0; c < 4; c++)  /* from the bitmap this particle's last scan read: those lines are hot */
         wl[c] = vmaj ? is_wall_v(w, x0 + (c & 1), y0 + (c >> 1)) : is_wall(w, x0 + (c & 1), y0 + (c >> 1));
@@ -691,7 +700,7 @@ static void tile_epoch(TP *M, int k) {
     while (kb > ka && M->lcuts[kb] > vhi + G + 100) kb--;
     t->wlo = widen(M, vlo - G > w->lo ? vlo - G : w->lo, -1, ka, kb);
     t->whi = widen(M, vhi - 1 + G < w->hi ? vhi - 1 + G : w->hi, +1, ka, kb);
-    t->tbase = M->t0;
+    t->tbase = M->t0; t->rlo = vlo; t->rhi = vhi; t->tend = M->t1;
     int64_t ng = 0;
     if (M->first) world_clear(t, M->t0);
     else {   /* last epoch's ghosts (every ball after a recut), where they are now (not at their last event) */

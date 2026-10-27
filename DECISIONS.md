@@ -503,3 +503,14 @@ the current time); meet() without divisions (the relative speeds are +-2). Seria
   a frame vs 15.1 with the recent-window weights, mean 11.8 vs 9.6: a tile's time per ball
   depends on its cuts (ghosts, setup) more than on where the balls are, so last frame's numbers
   under other cuts mislead. Not adopted; the recent-window weights stay.
+
+## 2026-10-26: ghosts beyond the shrinking light cone are dropped
+Counting blocks per tile-epoch: 94 at 16 threads, 65 of them in the ghost zone against 29 in
+the tile's own range (770 cells vs a 392-cell zone): the zone's outer part is full of junk
+cascades from balls whose partners lie outside the window. A ghost farther from the range than
+2 x (steps left in the epoch) + 8 cannot influence an own ball any more (nothing moves faster
+than 2 in v a step), so process_block drops such a block's particles instead of simulating
+them; exact (tiled == serial, full suite). Blocks 94 -> 72 per tile-epoch (ghost zone 65 ->
+44); re-adding the dropped ones next epoch costs 6 more adds (7.9 -> 14). Native 8 threads
+17.0 -> 14.7 ms (slowest tile), 16 threads unchanged; wasm (node) 8 threads 26-30 -> 23-24 ms,
+16 threads 23-25 -> 20-21.
