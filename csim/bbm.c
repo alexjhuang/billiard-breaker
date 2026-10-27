@@ -593,14 +593,23 @@ typedef struct TP_ {
     int64_t *cuts; int first;                               /* T + 1 range ends in v; first epoch of the call */
     int64_t *lcuts;                                         /* the particle list at t0 is the tiles' px/py: tile k's holds v in [lcuts[k], lcuts[k+1]) */
     int recut;                                              /* the ranges changed this epoch: every ball is re-matched */
-    _Alignas(64) atomic_int count; _Alignas(64) atomic_int sense; int stop, over, local;   /* over: the call has ended */
+    _Alignas(64) atomic_int bgen; int stop, over, local;      /* the barrier: each thread's own flag line, released by the master's generation; over: the call has ended */
+    struct { _Alignas(64) atomic_int v; } *flag;
     pthread_t *th; pthread_mutex_t mu; pthread_cond_t cv; int64_t gen;   /* the pool; gen counts calls (workers park between them) */
 } TP;
 
-static void tbar(TP *M, int *local) {
-    *local = !*local;
-    if (atomic_fetch_add(&M->count, 1) == M->T - 1) { atomic_store(&M->count, 0); atomic_store(&M->sense, *local); }
-    else while (atomic_load_explicit(&M->sense, memory_order_acquire) != *local) ;
+/* Barrier: a worker raises its own flag (its own cache line: no contended
+ * counter) and waits for the generation; the master waits for every flag and
+ * raises the generation. *local counts the barriers passed. */
+static void tbar(TP *M, int *local, int id) {
+    int g = ++*local;
+    if (id) {
+        atomic_store_explicit(&M->flag[id].v, g, memory_order_release);
+        while (atomic_load_explicit(&M->bgen, memory_order_acquire) != g) ;
+    } else {
+        for (int k = 1; k < M->T; k++) while (atomic_load_explicit(&M->flag[k].v, memory_order_acquire) != g) ;
+        atomic_store_explicit(&M->bgen, g, memory_order_release);
+    }
 }
 
 static World *tile_new(World *m) {
@@ -778,10 +787,10 @@ static void *tile_worker(void *arg) {
         pthread_mutex_unlock(&M->mu);
         if (M->stop) break;
         while (1) {
-            tbar(M, &local);          /* the epoch is set up, or the call is over */
-            if (M->over) { tbar(M, &local); break; }   /* (everyone has seen the end before the next call starts) */
+            tbar(M, &local, id);      /* the epoch is set up, or the call is over */
+            if (M->over) { tbar(M, &local, id); break; }   /* (everyone has seen the end before the next call starts) */
             run_tiles(M, id);
-            tbar(M, &local);          /* results ready */
+            tbar(M, &local, id);      /* results ready */
         }
     }
     return NULL;
@@ -790,7 +799,7 @@ static void *tile_worker(void *arg) {
 static void pool_free(TP *M) {
     pthread_mutex_lock(&M->mu); M->stop = 1; pthread_cond_broadcast(&M->cv); pthread_mutex_unlock(&M->mu);
     for (int k = 1; k < M->T; k++) pthread_join(M->th[k], NULL);
-    free(M->th); free(M->cuts); free(M->lcuts); free(M);
+    free(M->th); free(M->flag); free(M->cuts); free(M->lcuts); free(M);
 }
 
 #define HB 16  /* histogram bin width in v for the cuts */
@@ -816,7 +825,7 @@ int64_t world_run_tiles(World *w, int64_t t_end, int64_t nf, const int64_t *feed
         TP *P = w->pool = calloc(1, sizeof *P);
         P->w = w; P->T = T; P->NT = NT;
         P->cuts = malloc((NT + 1) * 8); P->lcuts = malloc((NT + 1) * 8);
-        P->th = malloc(T * sizeof(pthread_t));
+        P->th = malloc(T * sizeof(pthread_t)); P->flag = calloc(T, sizeof *P->flag);
         pthread_mutex_init(&P->mu, NULL); pthread_cond_init(&P->cv, NULL);
         for (int k = 1; k < T; k++) { TArg *a = malloc(sizeof *a); *a = (TArg){P, k}; pthread_create(&P->th[k], NULL, tile_worker, a); }
     }
@@ -868,9 +877,9 @@ int64_t world_run_tiles(World *w, int64_t t_end, int64_t nf, const int64_t *feed
         M->ra = ri; while (ri < nr && reads[3 * ri] < M->t1) ri++; M->rb = ri;
         M->ta = ti; while (ti < ntr && trs[ti] <= M->t1) ti++; M->tb = ti;
         atomic_store(&M->next, 0);
-        tbar(M, &M->local);
+        tbar(M, &M->local, 0);
         run_tiles(M, 0);
-        tbar(M, &M->local);
+        tbar(M, &M->local, 0);
         for (int k2 = 0; k2 < NT; k2++) w->tiles[k2]->toff = 0;
         for (int64_t q = M->ta; q < M->tb; q++) {   /* the recorded steps: every tile's share, in step order */
             int64_t c = 0;
@@ -895,7 +904,7 @@ int64_t world_run_tiles(World *w, int64_t t_end, int64_t nf, const int64_t *feed
         M->first = 0;
     }
     M->over = 1;   /* the call is over: the workers park */
-    tbar(M, &M->local); tbar(M, &M->local);
+    tbar(M, &M->local, 0); tbar(M, &M->local, 0);
     for (int k = 0; k < NT; k++) {   /* the master is a world again */
         const World *t = w->tiles[k];
         for (int64_t j = 0; j < t->np; j++) schedule(w, new_particle(w, t->px[j], t->py[j], w->t));

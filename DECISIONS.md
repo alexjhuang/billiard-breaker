@@ -490,3 +490,11 @@ grouping; the time key without a 64-bit modulo (an origin that is a multiple of 
 the current time); meet() without divisions (the relative speeds are +-2). Serial 37.4 ->
 36.2 ms. Measured and dropped: one bitmap test for a whole key range instead of 3-5 probes
 (1.5%; the probes are cheap, meet() is not: ~100 cycles, 1.3 per schedule).
+
+## 2026-10-26: barrier and wasm flags, measured
+- Flag barrier (each worker raises its own cache line, the master releases a generation) instead
+  of the counter barrier: native 16 threads 16.2 vs 16.8-18.8 ms, wasm 8/16 threads unchanged
+  (25-26 / 23-25). Kept (no contended counter, exact); the barrier is not the bottleneck,
+  scheduling noise on this shared host is.
+- wasm32 flags -O2, -mcpu=bleeding-edge, bulk-memory/sign-ext/nontrapping, -ffast-math: 54-57 ms
+  a frame on one thread, all within noise of -O3 (54.4). Kept -O3.
