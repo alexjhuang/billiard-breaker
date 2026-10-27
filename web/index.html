@@ -381,7 +381,7 @@ function sprite(col, r) {
 function buildRing() {
   if (!SQ) return;
   const c = $('mc'), w = c.width, h = c.height, k = dpr();
-  const ro = Math.max(1, Math.min(w / 2 - 14 * k, h / 2 - 34 * k)), R = mach.R = { cx: w / 2, cy: h / 2, ro, ri: ro * .52 };
+  const ro = Math.max(40 * k, Math.min(w / 2 - 14 * k, h / 2 - 34 * k)), R = mach.R = { cx: w / 2, cy: h / 2, ro, ri: ro * .52 };
   R.rl = R.ri - 10 * k;
   mach.sprites = COLORS.map(col => sprite(col, Math.round(5 * k)));
   const bg = document.createElement('canvas'); bg.width = w; bg.height = h;
