@@ -62,6 +62,7 @@ typedef struct World_ {
     struct World_ **tiles; int ntiles;
     struct TP_ *pool;                                    /* the tile threads (world_run_tiles), parked between calls */
     int64_t *kx, *ky; int64_t nk, kcap;   /* a tile's kept particles after an epoch */
+    int64_t *gx, *gy; int32_t *gid; uint8_t *gm; int64_t gcap2;   /* a tile's ghosts at the start of an epoch (scratch) */
 
 } World;
 
@@ -95,7 +96,7 @@ void world_free(World *w) {
 #ifndef BBM_NO_THREADS
     if (w->pool) pool_free(w->pool);
 #endif
-    free(w->tiles); free(w->kx); free(w->ky);
+    free(w->tiles); free(w->kx); free(w->ky); free(w->gx); free(w->gy); free(w->gid); free(w->gm);
     if (!w->shared_walls) { free(w->wu); free(w->wv); }
     for (int k = 0; k < NKIND; k++) { free(w->head[k]); free(w->nbm[k]); }
     for (int j = 0; j < 3; j++) { free(w->nxt[j]); free(w->prv[j]); free(w->bk[j]); }
@@ -668,20 +669,35 @@ static void tile_epoch(TP *M, int k) {
     t->wlo = widen(M, vlo - G > w->lo ? vlo - G : w->lo, -1, j0, j1);
     t->whi = widen(M, vhi - 1 + G < w->hi ? vhi - 1 + G : w->hi, +1, j0, j1);
     t->tbase = M->t0;
+    int64_t ng = 0;
     if (M->first) world_clear(t, M->t0);
-    else {
-        for (int32_t i = 0; i < t->top; i++) {   /* drop last epoch's ghosts (where they are now, not at their last event) */
+    else {   /* last epoch's ghosts, where they are now (not at their last event) */
+        if (t->gcap2 < t->nalive + 1) {
+            t->gcap2 = 2 * (t->nalive + 1);
+            t->gx = realloc(t->gx, t->gcap2 * 8); t->gy = realloc(t->gy, t->gcap2 * 8); t->gid = realloc(t->gid, t->gcap2 * 4); t->gm = realloc(t->gm, t->gcap2);
+        }
+        for (int32_t i = 0; i < t->top; i++) {
             if (!t->alive[i]) continue;
-            int64_t dt = M->t0 - t->t0[i], v = (t->x[i] - t->y[i]) + (DX[t->d[i]] - DY[t->d[i]]) * dt;
-            if (v < vlo || v >= vhi) { index_del(t, i); free_particle(t, i); }
+            int64_t dt = M->t0 - t->t0[i], x = t->x[i] + DX[t->d[i]] * dt, y = t->y[i] + DY[t->d[i]] * dt;
+            if (x - y >= vlo && x - y < vhi) continue;   /* mine, exact */
+            canon(t, &x, &y);
+            t->gx[ng] = x; t->gy[ng] = y; t->gid[ng] = i; t->gm[ng] = 0; ng++;
         }
     }
+    /* The window's balls from the merged list. A ghost of last epoch that sits
+     * exactly where the list has a ball is that ball (direction follows from
+     * the cell and the step), so it stays, events and all; the other ghosts
+     * go and the unmatched balls come in. Nearly every ghost matches: the
+     * inexact ones are only those that met the window's edge. */
     for (int64_t j = j0; j < j1; j++) {
         int64_t v = M->lx[j] - M->ly[j];
         if (v < t->wlo || v > t->whi) continue;
         if (!M->first && v >= vlo && v < vhi) continue;   /* mine already, exact */
-        schedule(t, new_particle(t, M->lx[j], M->ly[j], M->t0));
+        int64_t g = 0;
+        for (; g < ng; g++) if (t->gx[g] == M->lx[j] && t->gy[g] == M->ly[j] && !t->gm[g]) { t->gm[g] = 1; break; }
+        if (g == ng) schedule(t, new_particle(t, M->lx[j], M->ly[j], M->t0));
     }
+    for (int64_t g = 0; g < ng; g++) if (!t->gm[g]) { index_del(t, t->gid[g]); free_particle(t, t->gid[g]); }
     int64_t fi = M->fa, ri = M->ra;
     while (t->t < M->t1) {
         int64_t next = M->t1;
