@@ -518,3 +518,20 @@ With the light-cone drop, re-measured: epoch 48/64/96/128 native 16 threads 15.1
 wasm 28.3/19.9/21.3/21.6; default back to 64. Two tiles per thread: 20.0 vs 14.4-19.3, still no.
 Live site in headless Chromium: 16 threads 21 ms (47 frames/s), 8 threads 24 ms; the default
 cap goes back to 16.
+
+## 2026-10-26: co-moving tile ranges, measured and not adopted (yet)
+Nine balls in ten move SW: straight down the band at 2 cells a step with constant u2 (measured
+from pictures: 89% SW, 8-14% SE, a few NE). With fixed cuts nearly every ball crosses a cut
+each epoch. Tried: ranges that move down FLOW = 2 a step (the window becomes 4D + 4 below the
+range and 4 above; the light-cone drop's reach is (2 + FLOW) x steps left below and (2 - FLOW)
+above: getting that wrong, and treating a cut by its value instead of its index at the band's
+edges, each cost an inexact run caught by test_fastsim), cuts recomputed every epoch by the
+master while it waits, hashed re-matching, and cut weights 1 + HEATW x each ball's smoothed
+event rate carried along in the kept lists (the balls stay in their tiles). Exact over 30 frames
+with pictures. Native 16 threads: the mean tile fell from 8.8-9.0 to 7.3-8.0 ms a frame
+(plain counts: 6.9) but the slowest tile stayed at 13-14 (per-epoch bursts, not where the
+balls are: the per-tile averages were flat), so the frame went 14.6-15.3 -> 14.2-14.3; wasm
+(node) 20.0-20.5 -> 20.8-22.8 at 16 threads. Two tiles per thread balanced perfectly (max 14.1,
+mean 13.5) but doubled the ghost work. Reverted: the complexity buys ~4% natively and nothing
+in the browser. The lead is real (20% less total work) if the per-epoch burst imbalance can be
+addressed without more tiles.
