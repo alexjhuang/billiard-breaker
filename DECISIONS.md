@@ -467,3 +467,16 @@ Headless Chromium on the exported site, fresh profiles, this loaded host: 4 thre
 6: 24, 8: 22-23, 12: 23, 16: 24-26 (node: 8 and 16 equal). Default min(8, hardwareConcurrency);
 `?threads=N` overrides. The worker now queues back-to-back frames through a MessageChannel:
 setTimeout(0) in a worker was clamped to 4 ms, a sixth of the frame.
+
+## 2026-10-26: cut strategies measured against the slowest tile (16 threads, native, instrumented)
+The committed scheme (time per ball per tile over the last 8 epochs, recut every 8): slowest
+tile 15.3 ms a frame against a mean of 9.7 (1.58x); equal counts: 19.2 vs 8.1 (2.37x). Tried
+and not adopted:
+- a per-phase profile (each tile's time per ball at the same epoch of the previous call, the
+  machine repeating its motions every frame), cuts recomputed every epoch by the master while
+  it waits for the others: 16.9 vs 11.8 (1.43x) but the cuts moved every epoch, re-matching
+  and re-adding balls (17 adds per tile-epoch instead of 8, setup 5.1 ms instead of 3.4):
+  19.7 ms a frame against 17.8. A keep-the-cuts threshold (recut only when the predicted
+  slowest tile exceeds 1.15-2.0x the mean) still recut 262-423 times a frame.
+- block events per v bin of the previous call as weights: worse still (21 ms).
+- recut every 2, 4, 8, 16 epochs with the time weights: 18.6, 18.3, 17.8, 21.3 ms.
