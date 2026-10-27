@@ -535,3 +535,6 @@ balls are: the per-tile averages were flat), so the frame went 14.6-15.3 -> 14.2
 mean 13.5) but doubled the ghost work. Reverted: the complexity buys ~4% natively and nothing
 in the browser. The lead is real (20% less total work) if the per-epoch burst imbalance can be
 addressed without more tiles.
+Epoch length with the co-moving scheme (16 threads, two series): 64: 14.3/19.8 ms vs 14.5/14.7
+for the committed scheme; 96: 18.5/18.1 vs 17.2/14.4; 128: 15.5/20.1 vs 14.8/14.9; 192:
+18.5/19.9 vs 16.0/16.8; 256: 20.4/24.3 vs 21.7/21.4. No epoch length rescues it.
