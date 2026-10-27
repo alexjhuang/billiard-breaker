@@ -498,3 +498,8 @@ the current time); meet() without divisions (the relative speeds are +-2). Seria
   scheduling noise on this shared host is.
 - wasm32 flags -O2, -mcpu=bleeding-edge, bulk-memory/sign-ext/nontrapping, -ffast-math: 54-57 ms
   a frame on one thread, all within noise of -O3 (54.4). Kept -O3.
+- (later) Foresight cuts: at each recut (every 8 epochs), a ball weighted by the time per ball
+  its cell's tile took over the same coming 8 epochs of the previous call. Slowest tile 19.0 ms
+  a frame vs 15.1 with the recent-window weights, mean 11.8 vs 9.6: a tile's time per ball
+  depends on its cuts (ghosts, setup) more than on where the balls are, so last frame's numbers
+  under other cuts mislead. Not adopted; the recent-window weights stay.
