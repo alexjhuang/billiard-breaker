@@ -40,6 +40,7 @@ static const int SLOT[4][NKIND] = {{0, 1, -1, -1, 2, -1}, {-1, 1, 0, -1, -1, 2},
 
 typedef struct World_ {
     int64_t U, U2, lo, hi, V2, S, RWU, RWV;
+    int64_t torg, ulap;   /* torg: a multiple of U near the current time (keys_of); ulap: U % 4 != 0 (meet) */
     uint64_t *wu;   /* walls, rows of constant u2 = x + y: word u2 * RWU + (vv >> 6), bit vv & 63; vv = x - y - lo + PAD */
     uint64_t *wv;   /* walls, rows of constant vv: word vv * RWV + (u2 >> 6), bit u2 & 63 */
     /* particles: ids are stable, freed ids are reused */
@@ -55,6 +56,7 @@ typedef struct World_ {
     int32_t *cbuck; int64_t cbase;      /* cbuck[t % CQ]: first entry due at step t (t in [cbase, CQLIM)) */
     int32_t cfar;                       /* entries due at or after CQLIM */
     int32_t *grp; int64_t gcap;
+    int64_t *gcx, *gcy;   /* the block corners of the step's events (grouping scratch) */
     int64_t t;
     int broken;
     /* tiles (world_run_tiles): private copies sharing the walls; a tile trusts
@@ -76,7 +78,7 @@ static inline int64_t imin(int64_t a, int64_t b) { return a < b ? a : b; }
 
 World *world_new(int64_t U, int64_t lo, int64_t hi) {
     World *w = calloc(1, sizeof(World));
-    w->U = U; w->U2 = 2 * U; w->lo = lo; w->hi = hi; w->V2 = hi - lo + 1;
+    w->U = U; w->U2 = 2 * U; w->lo = lo; w->hi = hi; w->V2 = hi - lo + 1; w->ulap = U % 4 ? 1 : 0;
     w->S = w->V2 + 2 * PAD;
     w->RWU = (w->S + 63) / 64 + 1; w->RWV = (w->U2 + 63) / 64 + 1;
     w->wu = calloc(w->U2 * w->RWU, 8);
@@ -105,7 +107,7 @@ void world_free(World *w) {
     for (int k = 0; k < NKIND; k++) { free(w->head[k]); free(w->nbm[k]); }
     for (int j = 0; j < 3; j++) { free(w->nxt[j]); free(w->prv[j]); free(w->bk[j]); }
     free(w->x); free(w->y); free(w->t0); free(w->ev); free(w->d); free(w->alive); free(w->ver); free(w->mark);
-    free(w->ct); free(w->cid); free(w->cver); free(w->cnext); free(w->cbuck); free(w->grp); free(w);
+    free(w->ct); free(w->cid); free(w->cver); free(w->cnext); free(w->cbuck); free(w->grp); free(w->gcx); free(w->gcy); free(w);
 }
 
 static void grow(World *w, int32_t need) {
@@ -260,7 +262,7 @@ static int64_t cq_next(World *w, int64_t t_end) {
 /* ------------------------------------------------------------------ index */
 /* the three keys of particle i (its position is canonical, so one division does) */
 static void keys_of(World *w, int32_t i, int64_t key[3]) {
-    int64_t x = w->x[i], y = w->y[i], tm = mod(w->t0[i], w->U), U = w->U;
+    int64_t x = w->x[i], y = w->y[i], tm = wrap(w->t0[i] - w->torg, w->U), U = w->U;   /* torg: a multiple of U near the time (no division) */
     for (int j = 0; j < 3; j++) {
         switch (KIND[w->d[i]][j]) {
             case 0: key[j] = wrap(x - tm, U); break;
@@ -328,10 +330,10 @@ static int64_t meet(World *w, int32_t i, int32_t j) {
         while (r > U / 2) { r -= U; k--; }
         while (r < -U / 2) { r += U; k++; }
         if (Df + k * U > 1 || Df + k * U < -1) return INF;
-        for (int wv = -1; wv <= 1; wv++) {
+        for (int wv = -1; wv <= 1; wv++) {   /* vm is +-2: odd num never divides; even num / +-2 exactly */
             int64_t num = wv - Dm - k * U;
-            if (num % vm) continue;
-            TEST(num / vm, k);
+            if (num & 1) continue;
+            TEST(vm > 0 ? num >> 1 : -(num >> 1), k);
         }
         return best;
     }
@@ -342,8 +344,8 @@ static int64_t meet(World *w, int32_t i, int32_t j) {
         int64_t k = 0, r = num;  /* k with num - kU in [0, U) (vx > 0) or (-U, 0] (vx < 0): the first lap */
         if (vx > 0) { while (r < 0) { r += U; k--; } while (r >= U) { r -= U; k++; } }
         else { while (r > 0) { r -= U; k++; } while (r <= -U) { r += U; k--; } }
-        for (int lap = 0; lap <= (U % 4 ? 1 : 0); lap++, k += vx > 0 ? -1 : 1) {
-            int64_t s = (num - k * U) / vx, yy = Dy + k * U + vy * s;
+        for (int lap = 0; lap <= w->ulap; lap++, k += vx > 0 ? -1 : 1) {
+            int64_t a = num - k * U, s = (a & 1) ? a / vx : vx > 0 ? a >> 1 : -(a >> 1), yy = Dy + k * U + vy * s;   /* vx is +-2 */
             if (yy <= 1 && yy >= -1) TEST(s, k);
         }
     }
@@ -479,6 +481,7 @@ static void process_block(World *w, int64_t T, int32_t *ids, int m) {
 static void run_to(World *w, int64_t t_end) {
     cq_init(w);
     cq_advance(w, w->t);
+    if (w->t - w->torg >= w->U || w->t < w->torg) w->torg = (w->t / w->U) * w->U - (w->t < 0 ? w->U : 0);
     for (;;) {
         int64_t T = cq_next(w, t_end);
         if (T == INF) break;
@@ -490,26 +493,24 @@ static void run_to(World *w, int64_t t_end) {
             w->cnext[e] = w->cfree; w->cfree = e; e = n;
             if (!w->alive[id] || ver != w->ver[id] || w->mark[id] == (int32_t)(T & 0x7fffffff)) continue;
             w->mark[id] = (int32_t)(T & 0x7fffffff);
-            if (m == w->gcap) { w->gcap = w->gcap ? 2 * w->gcap : 64; w->grp = realloc(w->grp, w->gcap * 4 * 2); }
+            if (m == w->gcap) { w->gcap = w->gcap ? 2 * w->gcap : 64; w->grp = realloc(w->grp, w->gcap * 4 * 2); w->gcx = realloc(w->gcx, w->gcap * 8); w->gcy = realloc(w->gcy, w->gcap * 8); }
             w->grp[m++] = id;
         }
-        /* group by block: each particle's block corner at T */
-        int64_t o = T & 1;
+        /* group by block: each particle's block corner at T, computed once */
+        int64_t o = T & 1, *cx = w->gcx, *cy = w->gcy;
         int32_t *ids = w->grp, *tmp = w->grp + w->gcap;
         for (int q = 0; q < m; q++) {
-            if (ids[q] < 0) continue;
             int32_t i = ids[q];
             int64_t dt = T - w->t0[i], xa = w->x[i] + DX[w->d[i]] * dt, ya = w->y[i] + DY[w->d[i]] * dt;
             xa -= (xa - o) & 1; ya -= (ya - o) & 1; canon(w, &xa, &ya);
+            cx[q] = xa; cy[q] = ya;
+        }
+        for (int q = 0; q < m; q++) {
+            if (ids[q] < 0) continue;
             int n = 0;
-            tmp[n++] = i; ids[q] = -1;
-            for (int r = q + 1; r < m; r++) {
-                int32_t j = ids[r];
-                if (j < 0) continue;
-                int64_t dj = T - w->t0[j], xb = w->x[j] + DX[w->d[j]] * dj, yb = w->y[j] + DY[w->d[j]] * dj;
-                xb -= (xb - o) & 1; yb -= (yb - o) & 1; canon(w, &xb, &yb);
-                if (xa == xb && ya == yb) { tmp[n++] = j; ids[r] = -1; }
-            }
+            tmp[n++] = ids[q]; ids[q] = -1;
+            for (int r = q + 1; r < m; r++)
+                if (ids[r] >= 0 && cx[r] == cx[q] && cy[r] == cy[q]) { tmp[n++] = ids[r]; ids[r] = -1; }
             process_block(w, T, tmp, n);
         }
     }
@@ -604,7 +605,7 @@ static void tbar(TP *M, int *local) {
 
 static World *tile_new(World *m) {
     World *w = calloc(1, sizeof(World));
-    w->U = m->U; w->U2 = m->U2; w->lo = m->lo; w->hi = m->hi; w->V2 = m->V2; w->S = m->S; w->RWU = m->RWU; w->RWV = m->RWV;
+    w->U = m->U; w->U2 = m->U2; w->lo = m->lo; w->hi = m->hi; w->V2 = m->V2; w->S = m->S; w->RWU = m->RWU; w->RWV = m->RWV; w->ulap = m->ulap;
     w->wu = m->wu; w->wv = m->wv; w->shared_walls = 1; w->tiled = 1;
     memcpy(w->nb, m->nb, sizeof m->nb);
     for (int k = 0; k < NKIND; k++) { w->head[k] = malloc(w->nb[k] * 4); memset(w->head[k], -1, w->nb[k] * 4); w->nbm[k] = calloc(w->nb[k] / 64 + 1, 8); }

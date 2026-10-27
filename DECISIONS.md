@@ -480,3 +480,13 @@ and not adopted:
   slowest tile exceeds 1.15-2.0x the mean) still recut 262-423 times a frame.
 - block events per v bin of the previous call as weights: worse still (21 ms).
 - recut every 2, 4, 8, 16 epochs with the time weights: 18.6, 18.3, 17.8, 21.3 ms.
+
+## 2026-10-26: serial engine, profiled again (rdtsc per phase, instrumented 66 ms a frame)
+Per frame: 39.6k steps, 200k blocks, 265k schedules, 336k meets, 1.85M bucket probes. Phases:
+queue 2.6 ms, grouping 8.1, block rule 16.3, schedule 38.3 (wall scans 8.1, keys 7.2, partner
+lookups 15.7, index + push 7.3); the instrumentation inflates the small ones. Adopted (exact,
+full suite): the block corners of a step's events computed once instead of per pair in the
+grouping; the time key without a 64-bit modulo (an origin that is a multiple of U, kept near
+the current time); meet() without divisions (the relative speeds are +-2). Serial 37.4 ->
+36.2 ms. Measured and dropped: one bitmap test for a whole key range instead of 3-5 probes
+(1.5%; the probes are cheap, meet() is not: ~100 cycles, 1.3 per schedule).
