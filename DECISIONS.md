@@ -413,3 +413,18 @@ committed (web/bbm.wasm, web/bbm.wasm.src records the source hash; web.py --expo
 it is stale) because the toolchain is not a project dependency. tests/test_engine.py checks
 it against the C simulator frame by frame (states, flags, recorded balls). The JavaScript
 engine stays as the fallback (`?js`). The worker's frame cap goes from 30 to 60 frames/s.
+
+## 2026-10-26: WebAssembly threads on the site
+The tiles (world_run_tiles) run in the browser: csim/bbm.c built with wasm32-wasip1-threads
+(shared imported memory, 64 MiB initial / 1 GiB max) imports `wasi.thread-spawn`, which
+web/wasm.js serves from a pool of Web Workers started at init (each instantiates the module on
+the shared memory and blocks in Atomics.wait for its start argument), so pthread_create never
+depends on an event loop. The tile threads are now a persistent pool parked on a condition
+variable between calls (the old code created and joined them every call, which would mean a
+Web Worker per frame). SharedArrayBuffer needs cross-origin isolation; GitHub Pages sends no
+COOP/COEP headers, so web/coi.js (a 15-line service worker) adds them and the page reloads once
+on the first visit. Measured under Node here: 16 threads 31 ms a frame vs 53–71 on one; headless
+Chromium on the exported site: "16 threads, 30 ms". Exact: tests/test_engine.py runs 4 threads
+against the C simulator. The JavaScript engine and the single-thread module stay as fallbacks.
+A thread-count sentinel bug on the way: times can be negative in small machines, so "t1 < 0"
+cannot mean "call over" (a flag does).

@@ -259,22 +259,22 @@ def export(out):
     import hashlib
     meta, walls = machine_info(hardware.load())
     web = os.path.dirname(PAGE)
-    engine, gpu, wasmjs = (open(os.path.join(web, f), 'rb').read() for f in ('engine.js', 'gpu.js', 'wasm.js'))
-    wasm = open(os.path.join(web, 'bbm.wasm'), 'rb').read()
+    engine, gpu, wasmjs, coi = (open(os.path.join(web, f), 'rb').read() for f in ('engine.js', 'gpu.js', 'wasm.js', 'coi.js'))
+    wasm, wasmt = (open(os.path.join(web, f), 'rb').read() for f in ('bbm.wasm', 'bbmt.wasm'))
     src = hashlib.sha1(open(os.path.join(os.path.dirname(web), 'csim', 'bbm.c'), 'rb').read()).hexdigest()
     if open(os.path.join(web, 'bbm.wasm.src')).read().strip() != src:
         print('warning: web/bbm.wasm is older than csim/bbm.c; rebuild it with csim/build_wasm.sh', file=sys.stderr)
     os.makedirs(out, exist_ok=True)
     page = open(PAGE).read().replace('<script>\n', '<script>window.STATIC_SITE = true</script>\n<script>\n', 1)
-    v = hashlib.sha1(meta + walls + engine + gpu + wasmjs + wasm).hexdigest()[:8]  # the page always loads data from its own build
+    v = hashlib.sha1(meta + walls + engine + gpu + wasmjs + wasm + wasmt).hexdigest()[:8]  # the page always loads data from its own build
     for name in ('machine.json', 'walls.bin.gz', 'engine.js'):
         assert page.count(f"'{name}'") == 1, name
         page = page.replace(f"'{name}'", f"'{name}?v={v}'")
-    for name in ('gpu.js', 'wasm.js', 'bbm.wasm'):
+    for name in ('gpu.js', 'wasm.js', 'bbm.wasm', 'bbmt.wasm'):
         assert engine.count(f"'{name}'".encode()) == 1, name
         engine = engine.replace(f"'{name}'".encode(), f"'{name}?v={v}'".encode())
     files = {'index.html': page.encode(), 'machine.json': meta, 'walls.bin.gz': walls, '.nojekyll': b'', 'engine.js': engine, 'gpu.js': gpu,
-             'wasm.js': wasmjs, 'bbm.wasm': wasm}
+             'wasm.js': wasmjs, 'bbm.wasm': wasm, 'bbmt.wasm': wasmt, 'coi.js': coi}
     for name, data in files.items():
         with open(os.path.join(out, name), 'wb') as f:
             f.write(data)

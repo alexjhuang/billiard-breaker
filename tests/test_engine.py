@@ -46,3 +46,7 @@ def test_engine_matches_c_simulator(engine='js'):
 
 def test_wasm_engine_matches_c_simulator():
     test_engine_matches_c_simulator('wasm')
+
+
+def test_wasm_threads_match_c_simulator():
+    test_engine_matches_c_simulator('wasm4')

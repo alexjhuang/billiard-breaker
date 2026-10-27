@@ -159,3 +159,5 @@ rows = 16 mod 32 so every unintended crossing has |g|>=16.
 2026-10-26: C engine as WebAssembly on the site (default CPU engine): 53 ms a frame under
 Node vs 136 ms for the JavaScript engine; exact (tests/test_engine.py). Server path: calendar
 queue (serial 26.6 fps) and neighbour-segment tile setup (16 threads 42 fps, 32 threads 46).
+WebAssembly threads (pthreads over Web Workers, COI service worker): 16 threads 30 ms a frame
+in headless Chromium here; the live site picks the browser's core count (up to 16).

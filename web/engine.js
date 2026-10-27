@@ -504,12 +504,15 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
         M = await new GpuMachine(d.meta, d.squares, { spin: d.spin, tiles: d.tiles, epoch: d.epoch }).init();
         engine = 'GPU · ' + M.info + (d.spin ? ` · ${d.spin} spinners` : '');
       } catch (e) { M = null; engine = 'CPU (no WebGPU: ' + String(e).replace(/^Error: /, '') + ')'; }
-    } else if (!d.js) {  // the C engine as WebAssembly, about twice the speed of Machine
+    } else if (!d.js) {  // the C engine as WebAssembly, about twice the speed of Machine; threads when the page is cross-origin isolated
       try {
-        importScripts('wasm.js');
-        const bytes = await (await fetch('bbm.wasm')).arrayBuffer();
-        M = await new WasmMachine(d.meta, d.squares, bytes).init();
-        engine = 'CPU (WebAssembly)';
+        const WASM_JS = 'wasm.js';
+        importScripts(WASM_JS);
+        const shared = typeof SharedArrayBuffer !== 'undefined' && self.crossOriginIsolated;
+        const threads = shared ? Math.max(1, Math.min(16, d.threads || navigator.hardwareConcurrency || 1)) : 1;
+        const bytes = await (await fetch(threads > 1 ? 'bbmt.wasm' : 'bbm.wasm')).arrayBuffer();
+        M = await new WasmMachine(d.meta, d.squares, bytes, { threads, url: WASM_JS, epoch: d.epoch || 64 }).init();
+        engine = 'CPU (WebAssembly, ' + (threads > 1 ? threads + ' threads)' : shared ? '1 thread)' : '1 thread; no SharedArrayBuffer)');
       } catch (e) { M = null; engine = 'CPU (JavaScript; no WebAssembly: ' + String(e).replace(/^Error: /, '') + ')'; }
     } else engine = 'CPU (JavaScript)';
     if (!M) M = new Machine(d.meta, d.squares);
