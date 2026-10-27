@@ -80,9 +80,9 @@ button, or `?gpu`; experimental). The page says which one is running and how
 long a frame takes, on the GPU too when the browser has timestamp queries.
 
 - *CPU.* WebAssembly, under Node on this (shared, loaded) machine: 53–71 ms per
-  frame on one thread, 22 ms on 8 or 16 (`web/bbmt.wasm`; headless Chromium
-  here: 22–23 ms on 8 threads; the native C simulator takes 37 ms on one core,
-  15–17 on 16). Threads need SharedArrayBuffer, so the
+  frame on one thread, 22 ms on 8 or 16 (`web/bbmt.wasm`); the live site in
+  headless Chromium here: 22–25 ms on 8 threads, 41–45 frames/s. The native C
+  simulator takes 36 ms on one core, 15–17 on 16 threads (60–65 frames/s). Threads need SharedArrayBuffer, so the
   page is made cross-origin isolated by a service worker (`web/coi.js`) that
   adds the COOP/COEP headers GitHub Pages does not send; the first visit
   reloads once. JavaScript: 136 ms per frame. tests/test_engine.py checks all

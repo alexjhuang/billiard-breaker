@@ -161,3 +161,10 @@ Node vs 136 ms for the JavaScript engine; exact (tests/test_engine.py). Server p
 queue (serial 26.6 fps) and neighbour-segment tile setup (16 threads 42 fps, 32 threads 46).
 WebAssembly threads (pthreads over Web Workers, COI service worker): 16 threads 30 ms a frame
 in headless Chromium here; the live site picks the browser's core count (up to 16).
+
+2026-10-26 (later): site CPU engine = C tiles as WebAssembly threads. Headless Chromium on this
+loaded host (load ~97/192): 22-25 ms a frame on 8 threads, 41-45 frames/s (was 2 fps GPU / 7 fps
+JS at the start of the day). Native: 16 threads 15-17 ms (60-65 fps), serial 36 ms. The 60 fps
+goal is not verified in a browser here; the remaining gap is thread imbalance (slowest tile
+1.6x the mean) and the ghost zone (2 x epoch) being as wide as a tile's range. The page shows
+"computed in X ms · Y frames/s"; `?threads=N`, `?epoch=D`, `?js`, `?gpu` switch engines.
