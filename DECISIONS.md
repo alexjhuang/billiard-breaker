@@ -538,3 +538,17 @@ addressed without more tiles.
 Epoch length with the co-moving scheme (16 threads, two series): 64: 14.3/19.8 ms vs 14.5/14.7
 for the committed scheme; 96: 18.5/18.1 vs 17.2/14.4; 128: 15.5/20.1 vs 14.8/14.9; 192:
 18.5/19.9 vs 16.0/16.8; 256: 20.4/24.3 vs 21.7/21.4. No epoch length rescues it.
+
+## 2026-10-26: tiles run epochs without a global barrier
+A tile's epoch needs only its neighbours' kept lists of the previous epoch, so the per-epoch
+barrier is gone: each tile publishes its finished epoch in an atomic counter and waits for the
+tiles within reach (computed from the cuts) to be one epoch behind at most; the kept lists are
+a ring of three epochs; feeds, reads and traced steps advance per-tile cursors; the master
+drains the recorded steps and recuts at a global barrier every 8 epochs. Exact (full suite,
+30 frames with pictures on 1 vs 16 threads). Native 16 threads 14.6-14.7 -> 13.7 ms a frame
+(three runs each); wasm (node) 16 threads 20.8-21.3 -> 19.0-20.2. Longer barrier windows are
+worse (16: 15.1, 32: 16.8-20.7, 64: 18.5-25.3): the load drifts within a window and only the
+recut corrects it, so the chain absorbs less of the imbalance than hoped. Also tried: moving
+each cut between two neighbours every epoch toward the lighter one from their published times
+(deterministic, no barrier, ring of 8): exact, but 13.3-18.9 ms against 13.7 with the host's
+noise, and more code. Not adopted.
