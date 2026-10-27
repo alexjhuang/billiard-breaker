@@ -513,9 +513,9 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
         const WASM_JS = 'wasm.js';
         importScripts(WASM_JS);
         const shared = typeof SharedArrayBuffer !== 'undefined' && self.crossOriginIsolated;
-        const threads = shared ? Math.max(1, d.threads || Math.min(8, navigator.hardwareConcurrency || 1)) : 1;   // 8 beat 16 in Chromium here; ?threads=N
+        const threads = shared ? Math.max(1, d.threads || Math.min(16, navigator.hardwareConcurrency || 1)) : 1;   // ?threads=N overrides (16: 21 ms, 8: 24 ms in Chromium here)
         const bytes = await (await fetch(threads > 1 ? 'bbmt.wasm' : 'bbm.wasm')).arrayBuffer();
-        M = await new WasmMachine(d.meta, d.squares, bytes, { threads, url: WASM_JS, epoch: d.epoch || 96 }).init();
+        M = await new WasmMachine(d.meta, d.squares, bytes, { threads, url: WASM_JS, epoch: d.epoch || 64 }).init();
         engine = 'CPU (WebAssembly, ' + (threads > 1 ? threads + ' threads)' : shared ? '1 thread)' : '1 thread; no SharedArrayBuffer)');
       } catch (e) { M = null; engine = 'CPU (JavaScript; no WebAssembly: ' + String(e).replace(/^Error: /, '') + ')'; }
     } else engine = 'CPU (JavaScript)';

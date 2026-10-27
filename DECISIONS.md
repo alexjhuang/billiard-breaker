@@ -514,3 +514,7 @@ them; exact (tiled == serial, full suite). Blocks 94 -> 72 per tile-epoch (ghost
 44); re-adding the dropped ones next epoch costs 6 more adds (7.9 -> 14). Native 8 threads
 17.0 -> 14.7 ms (slowest tile), 16 threads unchanged; wasm (node) 8 threads 26-30 -> 23-24 ms,
 16 threads 23-25 -> 20-21.
+With the light-cone drop, re-measured: epoch 48/64/96/128 native 16 threads 15.1/14.5/14.6/14.9 ms,
+wasm 28.3/19.9/21.3/21.6; default back to 64. Two tiles per thread: 20.0 vs 14.4-19.3, still no.
+Live site in headless Chromium: 16 threads 21 ms (47 frames/s), 8 threads 24 ms; the default
+cap goes back to 16.

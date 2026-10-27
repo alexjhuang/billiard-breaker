@@ -44,7 +44,7 @@ async function poolThread(d, say) {
 class WasmMachine {
   constructor(meta, squares, wasm, opts = {}) {
     this.meta = meta; this.squares = squares; this.wasm = wasm; this.P = meta.P; this.n = 0;
-    this.threads = Math.max(1, opts.threads | 0); this.url = opts.url || 'wasm.js'; this.epoch = opts.epoch || 96;
+    this.threads = Math.max(1, opts.threads | 0); this.url = opts.url || 'wasm.js'; this.epoch = opts.epoch || 64;
   }
 
   async init() {

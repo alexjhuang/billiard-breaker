@@ -79,7 +79,7 @@ class FastCyl:
     def broken(self):
         return bool(lib().world_broken(self.w))
 
-    threads, epoch = 1, 96  # >1 threads: tiles across the band (world_run_tiles), `epoch` steps between merges (64-128 all close; 96 best measured)
+    threads, epoch = 1, 64  # >1 threads: tiles across the band (world_run_tiles), `epoch` steps between merges (48-128 measured; 64-96 flat)
 
     def run(self, t_end, feeds=(), reads=(), traces=()):
         """feeds/reads: sorted lists of (t, x, y). Returns list of read bits.
