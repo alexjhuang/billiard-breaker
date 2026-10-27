@@ -505,8 +505,8 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
     if (d.gpu) {  // opt-in: the GPU engine (web/gpu.js) is experimental
       try {
         importScripts('gpu.js');
-        M = await new GpuMachine(d.meta, d.squares, { spin: d.spin, tiles: d.tiles, epoch: d.epoch }).init();
-        engine = 'GPU · ' + M.info + (d.spin ? ` · ${d.spin} spinners` : '');
+        M = await new GpuMachine(d.meta, d.squares, { spin: d.spin, tiles: d.tiles, epoch: d.epoch, diag: d.diag }).init();
+        engine = 'GPU · ' + M.info + (d.spin ? ` · ${d.spin} spinners` : '') + (d.diag ? ` · diag ${d.diag} (garbage on purpose)` : '') + ` · ${M.T} tiles · epoch ${M.D}`;
       } catch (e) { M = null; engine = 'CPU (no WebGPU: ' + String(e).replace(/^Error: /, '') + ')'; }
     } else if (!d.js) {  // the C engine as WebAssembly, about twice the speed of Machine; threads when the page is cross-origin isolated
       try {

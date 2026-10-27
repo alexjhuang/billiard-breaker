@@ -150,9 +150,9 @@ function runHere(squares) {  // static site: the machine runs in a worker, posti
   worker.onerror = e => { fault = e.message || 'the engine failed to start'; };
   // the CPU engine (WebAssembly, ?threads=N) by default; ?gpu runs the experimental WebGPU engine (?tiles=N&epoch=D&spin=N tune and diagnose it); ?js the JavaScript one
   const q = new URLSearchParams(location.search), gpu = q.has('gpu');
-  worker.postMessage({ type: 'init', meta: M, squares, gpu, js: q.has('js'), threads: +(q.get('threads') || 0), spin: +(q.get('spin') || 0), tiles: +(q.get('tiles') || 0), epoch: +(q.get('epoch') || 0) });
+  worker.postMessage({ type: 'init', meta: M, squares, gpu, js: q.has('js'), threads: +(q.get('threads') || 0), spin: +(q.get('spin') || 0), tiles: +(q.get('tiles') || 0), epoch: +(q.get('epoch') || 0), diag: +(q.get('diag') || 0) });
   const b = $('engine');
-  b.style.display = ''; b.textContent = gpu ? 'switch to the CPU engine' : 'try the GPU engine (WebGPU, experimental)';
+  b.style.display = ''; b.textContent = gpu ? 'switch to the CPU engine' : 'try the GPU engine (WebGPU, experimental: slower)';
   b.onclick = () => { const u = new URL(location.href); if (gpu) u.searchParams.delete('gpu'); else u.searchParams.set('gpu', ''); location.href = u.href; };
   document.addEventListener('visibilitychange', () => worker.postMessage({ type: 'control', pause: document.hidden }));
   live = true;

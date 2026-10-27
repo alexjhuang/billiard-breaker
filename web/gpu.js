@@ -25,7 +25,7 @@ struct Params {
   U: i32, U2: i32, lo: i32, hi: i32, S: i32, RWU: i32, RWV: i32, P: i32,
   par0: i32, nfeeds: i32, nreads: i32, npics: i32, left: i32, right: i32, reset: i32, T: i32,
   picT: vec4<i32>, picK: vec4<i32>, picOff: vec4<i32>,
-  SWU: i32, SWV: i32, spin: i32, pad1: i32,
+  SWU: i32, SWV: i32, spin: i32, diag: i32,   // diag: bits that switch parts of the kernel off, to time them (results are then garbage)
 };
 struct Epoch { t0: i32, t1: i32, inBase: i32, outBase: i32 }   // one per dispatch (dynamic offset)
 @group(0) @binding(0) var<uniform> u: Params;
@@ -331,7 +331,7 @@ fn stepSlot(s: u32, t: i32, par: i32, cur: u32, nxt: u32, rec: i32, pf: ptr<func
     if (((walls >> u32(c)) & 1u) == 1u) { f |= 1u << u32(c); continue; }
     var cx = x0 + (c & 1); var cy = y0 + (c >> 1);
     let s2 = cx + cy; if (s2 < 0) { cx += u.U; cy += u.U; } else if (s2 >= u.U2) { cx -= u.U; cy -= u.U; }
-    if (cx - cy >= u.lo && cx - cy <= u.hi && hhas(cur, cellkey(cx, cy))) { f |= 1u << u32(c); }
+    if ((u.diag & 4) == 0 && cx - cy >= u.lo && cx - cy <= u.hi && hhas(cur, cellkey(cx, cy))) { f |= 1u << u32(c); }   // (diag 4: no partner lookups)
   }
   let n = countOneBits(f);
   var to = me;
@@ -343,7 +343,7 @@ fn stepSlot(s: u32, t: i32, par: i32, cur: u32, nxt: u32, rec: i32, pf: ptr<func
   let s2 = xn + yn; if (s2 < 0) { xn += u.U; yn += u.U; } else if (s2 >= u.U2) { xn -= u.U; yn -= u.U; }
   if (xn - yn < u.lo || xn - yn > u.hi) { wk[s] = DEAD; freeSlot(s); return; }   // out of the band: a sink
   px[s] = xn; py[s] = yn;
-  hinsert(nxt, cellkey(xn, yn));
+  if ((u.diag & 32) == 0) { hinsert(nxt, cellkey(xn, yn)); }   // (diag 32: no cell set)
   if (n == 1u) { wk[s] = wk[s] - 1; (*pf).i = -1; return; }
   wk[s] = -1;   // direction changed: scan again next step; fetch its words now
   let p1 = par ^ 1;
@@ -353,6 +353,7 @@ fn stepSlot(s: u32, t: i32, par: i32, cur: u32, nxt: u32, rec: i32, pf: ptr<func
 
 fn rescan(s: u32, par: i32, pf: ptr<function, Scan>) {
   if (s >= SLOTS || wk[s] != -1) { return; }
+  if ((u.diag & 2) != 0) { wk[s] = INF; wb[s] = 0u; return; }   // diag: no wall scans
   let x = px[s]; let y = py[s];
   let dx = 1 - 2 * ((x - par) & 1); let dy = 1 - 2 * ((y - par) & 1);
   let fr = front(x, y, dx, dy, par, pf);
@@ -448,6 +449,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
   workgroupBarrier();
   // 4. the epoch
   var t = t0;
+  if ((u.diag & 1) != 0) { t = t1; }   // diag: no steps at all (setup and dispatch cost)
   var pfs: array<Scan, ${SPT}>;
   for (var j = 0; j < ${SPT}; j++) { pfs[j].i = -1; }
   loop {
@@ -455,8 +457,8 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
     let par = (u.par0 + t) & 1;
     let cur = u32(t % 3) * HASH; let nxt = u32((t + 1) % 3) * HASH; let clr = u32((t + 2) % 3) * HASH;
     // A. clear the table for step t + 2; feeds and reads (one thread); rescans of balls that turned
-    for (var h = tid; h < HASH; h += ${WG}u) { atomicStore(&hk[clr + h], EMPTY); }
-    if (tid == 0u) {
+    if ((u.diag & 32) == 0) { for (var h = tid; h < HASH; h += ${WG}u) { atomicStore(&hk[clr + h], EMPTY); } }
+    if (tid == 0u && (u.diag & 16) == 0) {   // (diag 16: no feeds or reads)
       loop {
         if (nextF != t) { break; }
         let f = sched[fi]; fi++;
@@ -497,7 +499,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
       }
     }
     for (var j = 0; j < ${SPT}; j++) { rescan(tid + ${WG}u * u32(j), par, &pfs[j]); }
-    workgroupBarrier();
+    if ((u.diag & 8) == 0) { workgroupBarrier(); }   // (diag 8: no barriers; the kernel then races)
     // B. the rule, every ball at once, from table cur into table nxt
     var rec = -1;
     for (var j = 0; j < u.npics; j++) {
@@ -506,7 +508,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
     }
     for (var j = 0; j < ${SPT}; j++) { stepSlot(tid + ${WG}u * u32(j), t, par, cur, nxt, rec, &pfs[j]); }
     t++;
-    workgroupBarrier();
+    if ((u.diag & 8) == 0) { workgroupBarrier(); }
   }
   // 5. the balls that ended in my range, for the next epoch
   for (var j = 0u; j < ${SPT}u; j++) {
@@ -531,7 +533,7 @@ class GpuMachine {
   // meta: web.py machine_info; squares: its wall squares. opts: tiles (default 16), epoch (steps, default 64), spin. Call init() (async) before frame().
   constructor(meta, squares, opts = {}) {
     this.meta = meta; this.squares = squares; this.P = meta.P; this.n = 0;
-    this.spin = opts.spin | 0; this.T = Math.min(64, Math.max(1, opts.tiles | 0 || 16)); this.D = Math.max(8, opts.epoch | 0 || 64);
+    this.spin = opts.spin | 0; this.diag = opts.diag | 0; this.T = Math.min(64, Math.max(1, opts.tiles | 0 || 16)); this.D = Math.max(8, opts.epoch | 0 || 64);
   }
 
   async init() {
@@ -588,7 +590,7 @@ class GpuMachine {
     this.ub = d.createBuffer({ size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.params = new Int32Array(32);
     this.params.set([U2 / 2, U2, lo, hi, S, RWU, RWV, m.P, m.t_lo & 1, sched.length, rs.length, 0, 0, 0, 0, T]);
-    this.params[28] = SWU; this.params[29] = SWV; this.params[30] = this.spin ? 4000000 : 0;
+    this.params[28] = SWU; this.params[29] = SWV; this.params[30] = this.spin ? 4000000 : 0; this.params[31] = this.diag;
     // one Epoch uniform per dispatch, at the dynamic-offset alignment; the input half alternates
     this.E = Math.ceil(this.P / this.D);
     const align = Math.max(256, d.limits.minUniformBufferOffsetAlignment);
@@ -658,6 +660,7 @@ class GpuMachine {
     const o = new Uint32Array(all, 0, this.outSize / 4), kc = new Int32Array(all, this.outSize, T);
     let gpuMs = null;
     if (this.timed) { const q = new BigUint64Array(all, this.outSize + 4 * T, 2); gpuMs = Number(q[1] - q[0]) / 1e6; }
+    if (this.diag) o[0] = 0;   // (a diagnostic run computes garbage on purpose)
     if (o[0] & 1) throw new Error('a wall moved: the machine is broken');
     if (o[0] & 2) throw new Error(`more than ${SLOTS} balls in a tile's window`);
     if (o[0] & 4) throw new Error('cell hash full');
@@ -666,7 +669,7 @@ class GpuMachine {
     for (let i = 0; i < this.nreads; i++) counts[this.readNames[i]] = (counts[this.readNames[i]] || 0) + o[16 + i];
     const bits = {};
     for (const [name, c] of Object.entries(counts)) {
-      if (c !== 0 && c !== 2) throw new Error(`half a ball at output ${name}, frame ${this.n}`);
+      if (c !== 0 && c !== 2 && !this.diag) throw new Error(`half a ball at output ${name}, frame ${this.n}`);
       bits[name] = c >> 1;
     }
     const state = {};
