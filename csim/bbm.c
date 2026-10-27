@@ -702,18 +702,21 @@ static void tile_epoch(TP *M, int k) {
      * the cell and the step), so it stays, events and all; the other ghosts
      * go and the unmatched balls come in. Nearly every ghost matches: the
      * inexact ones are only those that met the window's edge. */
-    for (int s = ka; s <= kb; s++) {
-        const World *S = w->tiles[s];
-        for (int64_t j = 0; j < S->np; j++) {
-            int64_t x = S->px[j], y = S->py[j], v = x - y;
-            if (v < t->wlo || v > t->whi) continue;
-            if (!M->first && !M->recut && v >= vlo && v < vhi) continue;   /* mine already, exact */
-            int64_t g = 0;
-            for (; g < ng; g++) if (t->gx[g] == x && t->gy[g] == y && !t->gm[g]) { t->gm[g] = 1; break; }
-            if (g == ng) schedule(t, new_particle(t, x, y, M->t0));
+    for (int pass = 0; pass < 2; pass++) {   /* pass 0 marks the matches, then the unmatched ghosts go, pass 1 adds the newcomers
+                                              * (into the freed slots: the particle arrays stay as short as the live count) */
+        if (pass == 1) for (int64_t g = 0; g < ng; g++) if (!t->gm[g]) { index_del(t, t->gid[g]); free_particle(t, t->gid[g]); }
+        for (int s = ka; s <= kb; s++) {
+            const World *S = w->tiles[s];
+            for (int64_t j = 0; j < S->np; j++) {
+                int64_t x = S->px[j], y = S->py[j], v = x - y;
+                if (v < t->wlo || v > t->whi) continue;
+                if (!M->first && !M->recut && v >= vlo && v < vhi) continue;   /* mine already, exact */
+                int64_t g = 0;
+                for (; g < ng; g++) if (t->gx[g] == x && t->gy[g] == y && t->gm[g] == pass) { t->gm[g] = 1 + pass; break; }
+                if (g == ng && pass == 1) schedule(t, new_particle(t, x, y, M->t0));
+            }
         }
     }
-    for (int64_t g = 0; g < ng; g++) if (!t->gm[g]) { index_del(t, t->gid[g]); free_particle(t, t->gid[g]); }
     int64_t fi = M->fa, ri = M->ra, ti = M->ta;
     t->tn = 0; t->ntc = 0;
     while (t->t < M->t1) {
