@@ -117,11 +117,29 @@ class WasmMachine {
       if (gate[this.fg[i]]) { F[3 * nf] = BigInt(this.ft[i] + start); F[3 * nf + 1] = this.fx[i]; F[3 * nf + 2] = this.fy[i]; nf++; }
     const R = new BigInt64Array(this.mem.buffer, this.pr, 3 * nr);
     for (let i = 0; i < nr; i++) { R[3 * i] = BigInt(this.rt[i] + start); R[3 * i + 1] = this.rx[i]; R[3 * i + 2] = this.ry[i]; }
-    const run = T => this.threads > 1
-      ? E.world_run_tiles(w, BigInt(T), BigInt(nf), this.pf, BigInt(nr), this.pr, this.po, this.threads, BigInt(this.epoch))
-      : E.world_run(w, BigInt(T), BigInt(nf), this.pf, BigInt(nr), this.pr, this.po);
-    const pics = [];
-    for (const [T, K] of [...traces].sort((a, b) => a[0] - b[0])) {
+    const pics = [], sorted = [...traces].sort((a, b) => a[0] - b[0]);
+    if (this.threads > 1) {   // one tiled run, recording every traced step itself
+      const steps = [];
+      for (const [T, K] of sorted) for (let s = Math.max(T - K + 1, Number(E.world_time(w)) - start + 1); s <= T; s++) steps.push(s);
+      const ns = steps.length, cap = Math.max(1, ns * (Number(E.world_count(w)) + nf + 64));
+      const ps = E.malloc(8 * Math.max(1, ns)), puv = E.malloc(8 * cap), pc = E.malloc(8 * Math.max(1, ns));
+      const S = new BigInt64Array(this.mem.buffer, ps, Math.max(1, ns));
+      for (let i = 0; i < ns; i++) S[i] = BigInt(start + steps[i]);
+      const m = Number(E.world_run_tiles(w, BigInt(end), BigInt(nf), this.pf, BigInt(nr), this.pr, this.po, this.threads, BigInt(this.epoch), BigInt(ns), ps, puv, BigInt(cap), pc));
+      const uv = new Int32Array(this.mem.buffer, puv, 2 * m), cnt = Array.from(new BigInt64Array(this.mem.buffer, pc, ns), Number);
+      if (cnt.reduce((s, c) => s + c, 0) !== m) throw new Error('trace buffer too small');
+      let k0 = 0, a = 0;
+      for (const [T, K] of sorted) {
+        const k = steps.filter(s => s > T - K && s <= T).length, counts = cnt.slice(k0, k0 + k), b = a + counts.reduce((s, c) => s + c, 0);
+        const raw = new Uint16Array(2 * (b - a));
+        for (let i = a, j = 0; i < b; i++) { raw[j++] = uv[2 * i] >> 1; raw[j++] = uv[2 * i + 1] - lo; }
+        pics.push({ ph: T, counts, raw });
+        k0 += k; a = b;
+      }
+      E.free(ps); E.free(puv); E.free(pc);
+    } else {
+    const run = T => E.world_run(w, BigInt(T), BigInt(nf), this.pf, BigInt(nr), this.pr, this.po);
+    for (const [T, K] of sorted) {
       run(start + T - K);
       const k = Math.min(K, start + T - Number(E.world_time(w)));   // steps left to record
       const cap = Math.max(1, k) * (Number(E.world_count(w)) + nf + 64), puv = E.malloc(8 * cap), pc = E.malloc(8 * Math.max(1, k));
@@ -134,6 +152,7 @@ class WasmMachine {
       pics.push({ ph: T, counts, raw });
     }
     run(end);
+    }
     if (E.world_broken(w)) throw new Error('a wall moved: the machine is broken');
     const out = new Uint8Array(this.mem.buffer, this.po, nr), counts = {};
     for (let i = 0; i < nr; i++) counts[this.rn[i]] = (counts[this.rn[i]] || 0) + out[i];

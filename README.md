@@ -72,7 +72,7 @@ machine pauses while nobody is connected.
 same page plus the hardware as data and three engines that run the machine in
 the visitor's browser, in a Web Worker: the C simulator compiled to WebAssembly
 (`csim/build_wasm.sh`, needs the wasi-sdk; wrapped by `web/wasm.js`), the
-default, on as many threads as the browser reports cores (up to 16, `?threads=N`)
+default, on as many threads as the browser reports cores (up to 8 by default, `?threads=N`)
 by running the simulator's tiles with pthreads, each a Web Worker;
 `web/engine.js`, a JavaScript port of the same simulator (`?js`, and the
 fallback without WebAssembly); and `web/gpu.js` on the GPU through WebGPU (the
@@ -80,8 +80,9 @@ button, or `?gpu`; experimental). The page says which one is running and how
 long a frame takes, on the GPU too when the browser has timestamp queries.
 
 - *CPU.* WebAssembly, under Node on this (shared, loaded) machine: 53–71 ms per
-  frame on one thread, 31 ms on 16 (`web/bbmt.wasm`; the native C simulator
-  takes 37 ms on one core, 24 on 16). Threads need SharedArrayBuffer, so the
+  frame on one thread, 22 ms on 8 or 16 (`web/bbmt.wasm`; headless Chromium
+  here: 22–23 ms on 8 threads; the native C simulator takes 37 ms on one core,
+  15–17 on 16). Threads need SharedArrayBuffer, so the
   page is made cross-origin isolated by a service worker (`web/coi.js`) that
   adds the COOP/COEP headers GitHub Pages does not send; the first visit
   reloads once. JavaScript: 136 ms per frame. tests/test_engine.py checks all

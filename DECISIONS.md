@@ -454,3 +454,16 @@ cost as much as its 64 steps. Three changes, all exact (full suite):
 - Recut every 4, 8, 16 epochs: 17.3, 17.1, 17.2 ms. Kept 8.
 - Epoch length 64, 96, 128, 192 on 16 threads: native 17.6, 16.0, 16.9, 19.7 ms; wasm (node)
   26.9, 23.5, 25.4, 28.9. Default now 96 (fastsim.FastCyl.epoch, web/wasm.js).
+
+## 2026-10-26: pictures recorded inside the tiles; 8 threads by default in the browser
+A frame with pictures used to be four tiled calls with serial single-step runs between them
+(each call ends by rebuilding the master world); now world_run_tiles takes the sorted steps to
+record and each tile writes its own range's balls at those steps (exact: the ranges partition
+the band and own balls are exact throughout the epoch), the master concatenates per step. The
+pictures' cost in the browser went from ~3 ms a frame to ~0.4. Recording happens after the
+step's feeds, as in world_run_trace (the first version recorded before them: caught by
+test_traced_runs_are_exact).
+Headless Chromium on the exported site, fresh profiles, this loaded host: 4 threads 27 ms,
+6: 24, 8: 22-23, 12: 23, 16: 24-26 (node: 8 and 16 equal). Default min(8, hardwareConcurrency);
+`?threads=N` overrides. The worker now queues back-to-back frames through a MessageChannel:
+setTimeout(0) in a worker was clamped to 4 ms, a sixth of the frame.

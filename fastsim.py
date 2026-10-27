@@ -40,8 +40,9 @@ def lib():
         L.world_run_trace.restype = I64
         L.world_run_trace.argtypes = [ctypes.c_void_p, I64, I64, P64, I64, P64, ctypes.POINTER(ctypes.c_uint8),
                                       ctypes.POINTER(ctypes.c_int32), I64, P64]
+        L.world_run_tiles.restype = I64
         L.world_run_tiles.argtypes = [ctypes.c_void_p, I64, I64, P64, I64, P64, ctypes.POINTER(ctypes.c_uint8),
-                                      ctypes.c_int, I64]
+                                      ctypes.c_int, I64, I64, P64, ctypes.POINTER(ctypes.c_int32), I64, P64]
         _lib = L
     return _lib
 
@@ -90,21 +91,36 @@ class FastCyl:
         out = (ctypes.c_uint8 * max(1, len(reads)))()
         args = (len(feeds), _arr(f) if f else None, len(reads), _arr(r) if r else None, out)
         got = []
-        for T, K in sorted(traces):
+        traces = sorted(traces)
+        for T, K in traces:
             assert self.t <= T - K and T <= t_end, (self.t, T, K, t_end)
-            self._run(T - K, args)
-            cap = K * (lib().world_count(self.w) + len(feeds) + 64)
-            uv, counts = (ctypes.c_int32 * (2 * cap))(), (ctypes.c_int64 * K)()
-            m = lib().world_run_trace(self.w, T, *args, uv, cap, counts)
-            assert sum(counts) == m, 'trace buffer too small'
-            got.append((T, list(counts), uv[:2 * m]))
-        self._run(t_end, args)
+        if self.threads > 1:   # one tiled run records every step itself
+            steps = [s for T, K in traces for s in range(T - K + 1, T + 1)]
+            cap = max(1, len(steps) * (lib().world_count(self.w) + len(feeds) + 64))
+            uv, counts = (ctypes.c_int32 * (2 * cap))(), (ctypes.c_int64 * max(1, len(steps)))()
+            m = lib().world_run_tiles(self.w, t_end, *args, self.threads, self.epoch, len(steps), _arr(steps) if steps else None, uv, cap, counts)
+            assert sum(counts[:len(steps)]) == m, 'trace buffer too small'
+            k0 = a = 0
+            for T, K in traces:
+                c = list(counts[k0:k0 + K])
+                b = a + sum(c)
+                got.append((T, c, uv[2 * a:2 * b]))
+                k0, a = k0 + K, b
+        else:
+            for T, K in traces:
+                self._run(T - K, args)
+                cap = K * (lib().world_count(self.w) + len(feeds) + 64)
+                uv, counts = (ctypes.c_int32 * (2 * cap))(), (ctypes.c_int64 * K)()
+                m = lib().world_run_trace(self.w, T, *args, uv, cap, counts)
+                assert sum(counts) == m, 'trace buffer too small'
+                got.append((T, list(counts), uv[:2 * m]))
+            self._run(t_end, args)
         bits = list(out[:len(reads)])
         return (bits, got) if traces else bits
 
     def _run(self, t_end, args):
         if self.threads > 1:
-            lib().world_run_tiles(self.w, t_end, *args, self.threads, self.epoch)
+            lib().world_run_tiles(self.w, t_end, *args, self.threads, self.epoch, 0, None, None, 0, None)
         else:
             lib().world_run(self.w, t_end, *args)
 
