@@ -444,3 +444,13 @@ cost as much as its 64 steps. Three changes, all exact (full suite):
 - more tiles than threads with dynamic assignment (2, 3, 4 per thread) measured 24, 29, 35 ms
   a frame against 23 for one per thread: the per-tile costs beat the balance. Kept at one
   per thread, each thread running its own tile (hot cache); TILES_PER_THREAD stays a knob.
+
+## 2026-10-26: cut weights and epoch length, measured
+- Weighting the recut histogram by block events per 16-cell bin of v over the last recut window
+  (events at fixed v: gates, bumps) with weights 2, 5, 10, 20 balls per event per epoch: 16.8,
+  17.4, 17.7, 18.5 ms a frame against 17.2 with plain counts. Not adopted: the bursts are not
+  predictable from where they were. The time-per-ball weights of the previous entry measured
+  15.4-16.7 against 17.2-17.6 back to back and stay.
+- Recut every 4, 8, 16 epochs: 17.3, 17.1, 17.2 ms. Kept 8.
+- Epoch length 64, 96, 128, 192 on 16 threads: native 17.6, 16.0, 16.9, 19.7 ms; wasm (node)
+  26.9, 23.5, 25.4, 28.9. Default now 96 (fastsim.FastCyl.epoch, web/wasm.js).

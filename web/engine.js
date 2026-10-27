@@ -465,6 +465,9 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
   const PICS = 3, CLIP = 16, CLIP_EVERY = 0.3, FPS_CAP = 60;
   let M = null, engine = '', keys = { left: 0, right: 0, reset: 1 }, sweep = 8, phase = 0, fps = 0, period = 0, lastClip = -1;
   let tPrev = null, tNext = 0, paused = false, timer = null, busy = false;
+  // setTimeout(0) is clamped to 4 ms in a worker (a quarter of a frame); a message to ourselves is not, and still lets key messages in
+  const soon = new MessageChannel(), queued = () => { soon.port2.postMessage(0); return -1; };
+  soon.port1.onmessage = () => { timer = null; loop(); };
   const now = () => performance.now() / 1000;
   const pictureTimes = () => {  // same schedule as web.py Machine.picture_times
     const P = M.P, step = !sweep ? P / PICS : Math.max(1, P / (PICS * (fps || FPS_CAP) * sweep));
@@ -491,7 +494,8 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
       postMessage({ type: 'frame', n, state: r.state, win: r.win, lose: r.lose, inp, ms: Math.round(ms * 10) / 10, fps: Math.round(fps * 100) / 100, engine,
                     gpuMs: r.gpuMs == null ? null : Math.round(r.gpuMs * 10) / 10 });
       postMessage({ type: 'pics', n, P: M.P, sweep, pics: r.pics }, r.pics.map(q => q.raw.buffer));
-      timer = paused ? null : setTimeout(loop, Math.max(0, 1000 * (tNext - now())));
+      const wait = 1000 * (tNext - now());
+      timer = paused ? null : wait > 1 ? setTimeout(loop, wait) : queued();
     } catch (e) {
       postMessage({ type: 'fault', error: String(e) });
     }
@@ -511,7 +515,7 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
         const shared = typeof SharedArrayBuffer !== 'undefined' && self.crossOriginIsolated;
         const threads = shared ? Math.max(1, Math.min(16, d.threads || navigator.hardwareConcurrency || 1)) : 1;
         const bytes = await (await fetch(threads > 1 ? 'bbmt.wasm' : 'bbm.wasm')).arrayBuffer();
-        M = await new WasmMachine(d.meta, d.squares, bytes, { threads, url: WASM_JS, epoch: d.epoch || 64 }).init();
+        M = await new WasmMachine(d.meta, d.squares, bytes, { threads, url: WASM_JS, epoch: d.epoch || 96 }).init();
         engine = 'CPU (WebAssembly, ' + (threads > 1 ? threads + ' threads)' : shared ? '1 thread)' : '1 thread; no SharedArrayBuffer)');
       } catch (e) { M = null; engine = 'CPU (JavaScript; no WebAssembly: ' + String(e).replace(/^Error: /, '') + ')'; }
     } else engine = 'CPU (JavaScript)';

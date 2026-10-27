@@ -13,11 +13,17 @@ const INITIAL_PAGES = 1024, MAX_PAGES = 16384;   // 64 MiB (= the linker's --ini
 
 // What the wasi-libc pthread runtime imports (bbmt.wasm): time, yield, exit, and spawning a thread.
 function wasiImports(memory, spawn) {
-  const now = () => BigInt(Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) * 1e6));
+  let view = null;   // (a view is rebuilt only when the memory grew; no BigInt: the tiles time themselves twice an epoch)
+  const clock = typeof performance !== 'undefined' ? () => performance.now() : () => Date.now();
   return {
     env: { memory },
     wasi_snapshot_preview1: {
-      clock_time_get: (id, precision, out) => { new BigInt64Array(memory.buffer, out, 1)[0] = now(); return 0; },
+      clock_time_get: (id, precision, out) => {
+        if (!view || view.buffer !== memory.buffer) view = new DataView(memory.buffer);
+        const ns = clock() * 1e6, hi = Math.floor(ns / 4294967296);
+        view.setUint32(out, ns - hi * 4294967296, true); view.setUint32(out + 4, hi, true);
+        return 0;
+      },
       sched_yield: () => 0,
       proc_exit: code => { throw new Error('wasm exit ' + code); },
     },
@@ -38,7 +44,7 @@ async function poolThread(d, say) {
 class WasmMachine {
   constructor(meta, squares, wasm, opts = {}) {
     this.meta = meta; this.squares = squares; this.wasm = wasm; this.P = meta.P; this.n = 0;
-    this.threads = Math.max(1, opts.threads | 0); this.url = opts.url || 'wasm.js'; this.epoch = opts.epoch || 64;
+    this.threads = Math.max(1, opts.threads | 0); this.url = opts.url || 'wasm.js'; this.epoch = opts.epoch || 96;
   }
 
   async init() {
