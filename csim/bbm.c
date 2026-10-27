@@ -61,7 +61,8 @@ typedef struct World_ {
     int tiled, shared_walls; int64_t wlo, whi, tbase;
     struct World_ **tiles; int ntiles;
     struct TP_ *pool;                                    /* the tile threads (world_run_tiles), parked between calls */
-    int64_t *kx, *ky; int64_t nk, kcap;   /* a tile's kept particles after an epoch */
+    int64_t *kx, *ky; int64_t nk, kcap;   /* a tile's kept particles after an epoch (written) ... */
+    int64_t *px, *py; int64_t np, pcap;   /* ... and after the previous one (read by the neighbours): swapped between epochs */
     int64_t *gx, *gy; int32_t *gid; uint8_t *gm; int64_t gcap2;   /* a tile's ghosts at the start of an epoch (scratch) */
 
 } World;
@@ -96,7 +97,7 @@ void world_free(World *w) {
 #ifndef BBM_NO_THREADS
     if (w->pool) pool_free(w->pool);
 #endif
-    free(w->tiles); free(w->kx); free(w->ky); free(w->gx); free(w->gy); free(w->gid); free(w->gm);
+    free(w->tiles); free(w->kx); free(w->ky); free(w->px); free(w->py); free(w->gx); free(w->gy); free(w->gid); free(w->gm);
     if (!w->shared_walls) { free(w->wu); free(w->wv); }
     for (int k = 0; k < NKIND; k++) { free(w->head[k]); free(w->nbm[k]); }
     for (int j = 0; j < 3; j++) { free(w->nxt[j]); free(w->prv[j]); free(w->bk[j]); }
@@ -581,11 +582,11 @@ int64_t world_cells(World *w, int64_t *xy, int64_t cap) {
 #include <stdatomic.h>
 
 typedef struct TP_ {
-    World *w; int T; int64_t t0, t1; uint8_t *out;
+    World *w; int T, NT; int64_t t0, t1; uint8_t *out;    /* T threads run NT tiles, handed out dynamically */
+    _Alignas(64) atomic_int next;                           /* the next tile to run this epoch */
     const int64_t *feeds, *reads; int64_t fa, fb, ra, rb;   /* this epoch's feeds / reads */
     int64_t *cuts; int first;                               /* T + 1 range ends in v; first epoch of the call */
-    const int64_t *lx, *ly; int64_t n;                      /* the particle list at t0 */
-    int64_t *loff, *lcuts;                                  /* the list is in T segments: entries [loff[k], loff[k+1]) have v in [lcuts[k], lcuts[k+1]) */
+    int64_t *lcuts;                                         /* the particle list at t0 is the tiles' px/py: tile k's holds v in [lcuts[k], lcuts[k+1]) */
     _Alignas(64) atomic_int count; _Alignas(64) atomic_int sense; int stop, over, local;   /* over: the call has ended */
     pthread_t *th; pthread_mutex_t mu; pthread_cond_t cv; int64_t gen;   /* the pool; gen counts calls (workers park between them) */
 } TP;
@@ -630,23 +631,29 @@ static int64_t world_list(World *w, int64_t t, int64_t **lx, int64_t **ly) {
  * NE/SW particles on one line x + y, within 12 in v): a lone half ball bounces
  * off every mirror and shatters lanes, junk that costs events all epoch long
  * (it can never reach the tile's own range, but it is work). */
-static int64_t widen(TP *M, int64_t edge, int outward, int64_t j0, int64_t j1) {
+static int64_t widen(TP *M, int64_t edge, int outward, int ka, int kb) {
     World *w = M->w;
     int o = (int)(M->t0 & 1);
     for (int iter = 0; iter < 6; iter++) {
         int moved = 0;
-        for (int64_t j = j0; j < j1 && !moved; j++) {
-            int64_t x = M->lx[j], y = M->ly[j], v = x - y;
-            if (v < edge - 13 || v > edge + 13) continue;
-            if (((x - o) & 1) == ((y - o) & 1)) continue;   /* SE or NW: stays on its line */
-            int64_t u2 = x + y;
-            for (int64_t q = j0; q < j1; q++) {
-                if (q == j || M->lx[q] + M->ly[q] != u2) continue;
-                int64_t vq = M->lx[q] - M->ly[q];
-                if (vq < v - 12 || vq > v + 12) continue;
-                int64_t a = v < vq ? v : vq, b = v < vq ? vq : v;
-                if (outward < 0 && a < edge && b >= edge) { edge = a; moved = 1; break; }   /* lower edge: window is [edge, ..] */
-                if (outward > 0 && a <= edge && b > edge) { edge = b; moved = 1; break; }   /* upper edge: window is [.., edge] */
+        for (int s = ka; s <= kb && !moved; s++) {
+            const World *S = w->tiles[s];
+            for (int64_t j = 0; j < S->np && !moved; j++) {
+                int64_t x = S->px[j], y = S->py[j], v = x - y;
+                if (v < edge - 13 || v > edge + 13) continue;
+                if (((x - o) & 1) == ((y - o) & 1)) continue;   /* SE or NW: stays on its line */
+                int64_t u2 = x + y;
+                for (int s2 = ka; s2 <= kb && !moved; s2++) {
+                    const World *S2 = w->tiles[s2];
+                    for (int64_t q = 0; q < S2->np; q++) {
+                        if ((s2 == s && q == j) || S2->px[q] + S2->py[q] != u2) continue;
+                        int64_t vq = S2->px[q] - S2->py[q];
+                        if (vq < v - 12 || vq > v + 12) continue;
+                        int64_t a = v < vq ? v : vq, b = v < vq ? vq : v;
+                        if (outward < 0 && a < edge && b >= edge) { edge = a; moved = 1; break; }   /* lower edge: window is [edge, ..] */
+                        if (outward > 0 && a <= edge && b > edge) { edge = b; moved = 1; break; }   /* upper edge: window is [.., edge] */
+                    }
+                }
             }
         }
         if (!moved) break;
@@ -661,13 +668,12 @@ static int64_t widen(TP *M, int64_t edge, int outward, int64_t j0, int64_t j1) {
 static void tile_epoch(TP *M, int k) {
     World *w = M->w, *t = w->tiles[k];
     int64_t G = 2 * (M->t1 - M->t0) + 4, vlo = M->cuts[k], vhi = M->cuts[k + 1];
-    /* the list segments that can hold anything within the window (widen moves an edge by at most 6 * 12 + 13) */
-    int ka = 0, kb = M->T - 1;
+    /* the list segments (tiles' previous kept lists) that can hold anything within the window (widen moves an edge by at most 6 * 12 + 13) */
+    int ka = 0, kb = M->NT - 1;
     while (ka < kb && M->lcuts[ka + 1] <= vlo - G - 100) ka++;
     while (kb > ka && M->lcuts[kb] > vhi + G + 100) kb--;
-    int64_t j0 = M->loff[ka], j1 = M->loff[kb + 1];
-    t->wlo = widen(M, vlo - G > w->lo ? vlo - G : w->lo, -1, j0, j1);
-    t->whi = widen(M, vhi - 1 + G < w->hi ? vhi - 1 + G : w->hi, +1, j0, j1);
+    t->wlo = widen(M, vlo - G > w->lo ? vlo - G : w->lo, -1, ka, kb);
+    t->whi = widen(M, vhi - 1 + G < w->hi ? vhi - 1 + G : w->hi, +1, ka, kb);
     t->tbase = M->t0;
     int64_t ng = 0;
     if (M->first) world_clear(t, M->t0);
@@ -689,13 +695,16 @@ static void tile_epoch(TP *M, int k) {
      * the cell and the step), so it stays, events and all; the other ghosts
      * go and the unmatched balls come in. Nearly every ghost matches: the
      * inexact ones are only those that met the window's edge. */
-    for (int64_t j = j0; j < j1; j++) {
-        int64_t v = M->lx[j] - M->ly[j];
-        if (v < t->wlo || v > t->whi) continue;
-        if (!M->first && v >= vlo && v < vhi) continue;   /* mine already, exact */
-        int64_t g = 0;
-        for (; g < ng; g++) if (t->gx[g] == M->lx[j] && t->gy[g] == M->ly[j] && !t->gm[g]) { t->gm[g] = 1; break; }
-        if (g == ng) schedule(t, new_particle(t, M->lx[j], M->ly[j], M->t0));
+    for (int s = ka; s <= kb; s++) {
+        const World *S = w->tiles[s];
+        for (int64_t j = 0; j < S->np; j++) {
+            int64_t x = S->px[j], y = S->py[j], v = x - y;
+            if (v < t->wlo || v > t->whi) continue;
+            if (!M->first && v >= vlo && v < vhi) continue;   /* mine already, exact */
+            int64_t g = 0;
+            for (; g < ng; g++) if (t->gx[g] == x && t->gy[g] == y && !t->gm[g]) { t->gm[g] = 1; break; }
+            if (g == ng) schedule(t, new_particle(t, x, y, M->t0));
+        }
     }
     for (int64_t g = 0; g < ng; g++) if (!t->gm[g]) { index_del(t, t->gid[g]); free_particle(t, t->gid[g]); }
     int64_t fi = M->fa, ri = M->ra;
@@ -724,6 +733,11 @@ static void tile_epoch(TP *M, int k) {
     }
 }
 
+/* thread id runs its own tile (hot in its cache), then whatever tiles beyond T are left */
+static void run_tiles(TP *M, int id) {
+    for (int k = id; k < M->NT; k = M->T + atomic_fetch_add(&M->next, 1)) tile_epoch(M, k);
+}
+
 typedef struct { TP *M; int id; } TArg;
 
 static void *tile_worker(void *arg) {
@@ -738,7 +752,7 @@ static void *tile_worker(void *arg) {
         while (1) {
             tbar(M, &local);          /* the epoch is set up, or the call is over */
             if (M->over) { tbar(M, &local); break; }   /* (everyone has seen the end before the next call starts) */
-            tile_epoch(M, id);
+            run_tiles(M, id);
             tbar(M, &local);          /* results ready */
         }
     }
@@ -748,24 +762,28 @@ static void *tile_worker(void *arg) {
 static void pool_free(TP *M) {
     pthread_mutex_lock(&M->mu); M->stop = 1; pthread_cond_broadcast(&M->cv); pthread_mutex_unlock(&M->mu);
     for (int k = 1; k < M->T; k++) pthread_join(M->th[k], NULL);
-    free(M->th); free(M->cuts); free(M->loff); free(M->lcuts); free(M);
+    free(M->th); free(M->cuts); free(M->lcuts); free(M);
 }
 
 #define HB 16  /* histogram bin width in v for the cuts */
 #define RECUT 8  /* epochs between recuts of the ranges (each a full reload of the tiles) */
+#ifndef TILES_PER_THREAD
+#define TILES_PER_THREAD 1  /* 2-4 measured slower: the per-tile costs (ghosts, widening) outweigh the balance */
+#endif
 
 void world_run_tiles(World *w, int64_t t_end, int64_t nf, const int64_t *feeds,
                      int64_t nr, const int64_t *reads, uint8_t *out, int T, int64_t D) {
-    if (w->ntiles < T) {
-        w->tiles = realloc(w->tiles, T * sizeof(World *));
-        for (int k = w->ntiles; k < T; k++) w->tiles[k] = tile_new(w);
-        w->ntiles = T;
+    int NT = T * TILES_PER_THREAD;
+    if (w->ntiles < NT) {
+        w->tiles = realloc(w->tiles, NT * sizeof(World *));
+        for (int k = w->ntiles; k < NT; k++) w->tiles[k] = tile_new(w);
+        w->ntiles = NT;
     }
     if (w->pool && w->pool->T != T) { pool_free(w->pool); w->pool = NULL; }
     if (!w->pool) {
         TP *P = w->pool = calloc(1, sizeof *P);
-        P->w = w; P->T = T;
-        P->cuts = malloc((T + 1) * 8); P->loff = malloc((T + 1) * 8); P->lcuts = malloc((T + 1) * 8);
+        P->w = w; P->T = T; P->NT = NT;
+        P->cuts = malloc((NT + 1) * 8); P->lcuts = malloc((NT + 1) * 8);
         P->th = malloc(T * sizeof(pthread_t));
         pthread_mutex_init(&P->mu, NULL); pthread_cond_init(&P->cv, NULL);
         for (int k = 1; k < T; k++) { TArg *a = malloc(sizeof *a); *a = (TArg){P, k}; pthread_create(&P->th[k], NULL, tile_worker, a); }
@@ -773,9 +791,14 @@ void world_run_tiles(World *w, int64_t t_end, int64_t nf, const int64_t *feeds,
     TP *M = w->pool;
     M->out = out; M->feeds = feeds; M->reads = reads; M->over = 0;
     pthread_mutex_lock(&M->mu); M->gen++; pthread_cond_broadcast(&M->cv); pthread_mutex_unlock(&M->mu);   /* wake the pool */
-    int64_t *lx, *ly, n = world_list(w, w->t, &lx, &ly), cap = n + 1;
-    M->loff[0] = 0; M->lcuts[0] = w->lo;   /* one segment: the list is unsorted */
-    for (int k = 1; k <= T; k++) { M->loff[k] = n; M->lcuts[k] = w->hi + 1; }
+    {   /* the master's particles become tile 0's "previous kept list", one segment holding the whole band */
+        World *t = w->tiles[0];
+        free(t->px); free(t->py);
+        t->np = world_list(w, w->t, &t->px, &t->py); t->pcap = t->np + 1;
+        for (int k = 1; k < NT; k++) w->tiles[k]->np = 0;
+        M->lcuts[0] = w->lo;
+        for (int k = 1; k <= NT; k++) M->lcuts[k] = w->hi + 1;
+    }
     world_clear(w, w->t);
     int64_t nb = w->V2 / HB + 2, *hist = malloc(nb * 8);
     int64_t fi = 0, ri = 0;
@@ -785,42 +808,49 @@ void world_run_tiles(World *w, int64_t t_end, int64_t nf, const int64_t *feeds,
     int64_t epoch = 0;
     while (w->t < t_end) {
         M->t0 = w->t; M->t1 = w->t + D < t_end ? w->t + D : t_end;
-        M->lx = lx; M->ly = ly; M->n = n;
         if (epoch++ % RECUT == 0) {   /* ranges of equal ball counts from a coarse histogram of v; the action
                                        * drifts down the band during a frame, so recut now and then (a full
                                        * reload). Weighting by measured events per tile was tried: no gain. */
             memset(hist, 0, nb * 8);
-            for (int64_t j = 0; j < n; j++) hist[(lx[j] - ly[j] - w->lo) / HB]++;
-            M->cuts[0] = w->lo; M->cuts[T] = w->hi + 1;
-            int64_t acc = 0; int k = 1;
-            for (int64_t b = 0; b < nb && k < T; b++) {
-                acc += hist[b];
-                while (k < T && acc * T >= n * k) M->cuts[k++] = w->lo + (b + 1) * HB;
+            int64_t n = 0;
+            for (int k = 0; k < NT; k++) {
+                const World *t = w->tiles[k];
+                for (int64_t j = 0; j < t->np; j++) hist[(t->px[j] - t->py[j] - w->lo) / HB]++;
+                n += t->np;
             }
-            for (; k < T; k++) M->cuts[k] = w->hi + 1;
+            M->cuts[0] = w->lo; M->cuts[NT] = w->hi + 1;
+            int64_t acc = 0; int k = 1;
+            for (int64_t b = 0; b < nb && k < NT; b++) {
+                acc += hist[b];
+                while (k < NT && acc * NT >= n * k) M->cuts[k++] = w->lo + (b + 1) * HB;
+            }
+            for (; k < NT; k++) M->cuts[k] = w->hi + 1;
             M->first = 1;
         }
         M->fa = fi; while (fi < nf && feeds[3 * fi] < M->t1) fi++; M->fb = fi;
         M->ra = ri; while (ri < nr && reads[3 * ri] < M->t1) ri++; M->rb = ri;
+        atomic_store(&M->next, 0);
         tbar(M, &M->local);
-        tile_epoch(M, 0);
+        run_tiles(M, 0);
         tbar(M, &M->local);
-        int64_t tot = 0;   /* merge the kept particles */
-        for (int k2 = 0; k2 < T; k2++) { tot += w->tiles[k2]->nk; if (w->tiles[k2]->broken) { w->broken = 1; w->tiles[k2]->broken = 0; } }
-        if (tot + 1 > cap) { cap = 2 * (tot + 1); lx = realloc(lx, cap * 8); ly = realloc(ly, cap * 8); }
-        n = 0;
-        for (int k2 = 0; k2 < T; k2++) {   /* segment k2 of the new list is tile k2's range */
+        for (int k2 = 0; k2 < NT; k2++) {   /* the kept lists become the previous ones (segment k2 = tile k2's range); no copy */
             World *t = w->tiles[k2];
-            M->loff[k2] = n; M->lcuts[k2] = M->cuts[k2];
-            memcpy(lx + n, t->kx, t->nk * 8); memcpy(ly + n, t->ky, t->nk * 8); n += t->nk;
+            int64_t *x = t->px, *y = t->py, c = t->pcap;
+            t->px = t->kx; t->py = t->ky; t->np = t->nk; t->pcap = t->kcap;
+            t->kx = x; t->ky = y; t->kcap = c; t->nk = 0;
+            M->lcuts[k2] = M->cuts[k2];
+            if (t->broken) { w->broken = 1; t->broken = 0; }
         }
-        M->loff[T] = n; M->lcuts[T] = M->cuts[T];
+        M->lcuts[NT] = M->cuts[NT];
         w->t = M->t1;
         M->first = 0;
     }
     M->over = 1;   /* the call is over: the workers park */
     tbar(M, &M->local); tbar(M, &M->local);
-    for (int64_t j = 0; j < n; j++) schedule(w, new_particle(w, lx[j], ly[j], w->t));   /* the master is a world again */
-    free(lx); free(ly); free(hist);
+    for (int k = 0; k < NT; k++) {   /* the master is a world again */
+        const World *t = w->tiles[k];
+        for (int64_t j = 0; j < t->np; j++) schedule(w, new_particle(w, t->px[j], t->py[j], w->t));
+    }
+    free(hist);
 }
 #endif

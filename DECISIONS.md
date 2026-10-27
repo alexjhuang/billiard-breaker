@@ -428,3 +428,19 @@ Chromium on the exported site: "16 threads, 30 ms". Exact: tests/test_engine.py 
 against the C simulator. The JavaScript engine and the single-thread module stay as fallbacks.
 A thread-count sentinel bug on the way: times can be negative in small machines, so "t1 < 0"
 cannot mean "call over" (a flag does).
+
+## 2026-10-26: tile epochs without the merge, ghosts kept, one tile per thread
+Profiling the tiled run per epoch (rdtsc per tile): the critical path was the slowest tile
+(2x the mean; hot tiles persist, correlation 0.69 epoch to epoch) plus the master's merge of the
+kept lists (12k cycles of ~70k), and a tile's setup (reloading ~17 ghosts, each a schedule())
+cost as much as its 64 steps. Three changes, all exact (full suite):
+- ghosts that sit exactly where the merged list has a ball are that ball (position and step fix
+  the direction) and stay, events included; only the others are dropped and the newcomers
+  added (4.6 adds per tile per epoch instead of 17; the churn is balls crossing the 132-wide
+  ghost zone at 2 per step). 16 threads 42 -> 52 fps.
+- no merge: each tile keeps two kept lists (this epoch's and the previous one's, swapped by
+  the master between epochs) and the neighbours read the previous one directly as the
+  segment for its range. 52 -> 58 fps.
+- more tiles than threads with dynamic assignment (2, 3, 4 per thread) measured 24, 29, 35 ms
+  a frame against 23 for one per thread: the per-tile costs beat the balance. Kept at one
+  per thread, each thread running its own tile (hot cache); TILES_PER_THREAD stays a knob.
